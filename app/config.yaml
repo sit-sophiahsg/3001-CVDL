@@ -1,0 +1,93 @@
+# FreshScale configuration - edit this file to change items, prices or discounts.
+# No code changes needed; the app re-reads it on every interaction.
+
+store_name: FreshScale
+
+currency:
+  code: SGD
+  symbol: "S$"
+  decimals: 2
+
+# What happens for each freshness status returned by the model.
+#   discount: fraction taken off the price (0.0 = no discount, 0.3 = 30% off)
+#   sellable: false means "Not for sale - please inform staff" and no price
+status_rules:
+  Fresh:
+    discount: 0.0
+    sellable: true
+  Rotten:
+    discount: null
+    sellable: false
+
+# Produce items. category must be "fruit" or "vegetable".
+# Items with enabled: false are shown greyed out with a "Coming soon" tag.
+produce:
+  # Fruits
+  - id: apple
+    name: Apple
+    category: fruit
+    emoji: "🍎"
+    price_per_kg: 5.50
+    enabled: true
+  - id: banana
+    name: Banana
+    category: fruit
+    emoji: "🍌"
+    price_per_kg: 2.90
+    enabled: true
+  - id: orange
+    name: Orange
+    category: fruit
+    emoji: "🍊"
+    price_per_kg: 4.90
+    enabled: true
+  - id: lemon
+    name: Lemon
+    category: fruit
+    emoji: "🍋"
+    price_per_kg: 6.90
+    enabled: false
+
+  # Vegetables
+  - id: tomato
+    name: Tomato
+    category: vegetable
+    emoji: "🍅"
+    price_per_kg: 4.20
+    enabled: true
+  - id: capsicum
+    name: Bell Pepper
+    category: vegetable
+    emoji: "🫑"
+    price_per_kg: 8.90
+    enabled: true
+  - id: cucumber
+    name: Cucumber
+    category: vegetable
+    emoji: "🥒"
+    price_per_kg: 3.50
+    enabled: true
+  - id: okra
+    name: Okra
+    category: vegetable
+    emoji: "🫛"
+    price_per_kg: 7.90
+    enabled: true
+  - id: potato
+    name: Potato
+    category: vegetable
+    emoji: "🥔"
+    price_per_kg: 2.60
+    enabled: true
+  - id: bitter_gourd
+    name: Bitter Gourd
+    category: vegetable
+    emoji: "🥬"
+    price_per_kg: 5.90
+    enabled: true
+  - id: onion
+    name: Onion
+    category: vegetable
+    emoji: "🧅"
+    price_per_kg: 2.40
+    enabled: false
