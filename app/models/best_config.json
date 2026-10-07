@@ -1,0 +1,57 @@
+{
+  "backbone": "resnet50",
+  "lr": 0.0003,
+  "best_epoch": 7,
+  "val_stage_f1": 0.9953771157544187,
+  "produce_classes": [
+    "apple",
+    "banana",
+    "bitter_gourd",
+    "capsicum",
+    "cucumber",
+    "okra",
+    "orange",
+    "potato",
+    "tomato"
+  ],
+  "stage_classes": [
+    "Fresh",
+    "Rotten"
+  ],
+  "remove_stage": "Rotten",
+  "discount": {
+    "Fresh": 0.0
+  },
+  "preprocess": {
+    "color": "RGB",
+    "resize_shorter_side": 255,
+    "center_crop": 224,
+    "scale": "divide by 255",
+    "mean": [
+      0.485,
+      0.456,
+      0.406
+    ],
+    "std": [
+      0.229,
+      0.224,
+      0.225
+    ],
+    "layout": "NCHW"
+  },
+  "valid_scan": {
+    "energy_thr": -1.2543010711669922,
+    "stage_conf_thr": 0.8959401845932007,
+    "rule": "valid if -logsumexp(produce_logits) <= energy_thr and max(stage_probs) >= stage_conf_thr"
+  },
+  "onnx": {
+    "fp32": "produce_fp32.onnx",
+    "int8": "produce_int8.onnx",
+    "input": "image",
+    "outputs": [
+      "produce_probs",
+      "stage_probs",
+      "produce_logits"
+    ]
+  }
+}
