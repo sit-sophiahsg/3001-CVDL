@@ -5,6 +5,7 @@ Run from the repo root with:  streamlit run app/app.py
 
 from __future__ import annotations
 
+import base64
 import html
 import io
 from datetime import datetime, timedelta, timezone
@@ -18,10 +19,21 @@ import pricing
 import styles
 
 CONFIG_PATH = Path(__file__).with_name("config.yaml")
+IMAGES_DIR = Path(__file__).with_name("images")  # home screen photos, e.g. fruits.jpg
+IMAGE_NAMES = {"vegetable": ("vegetable", "vegetables", "vegies", "veggies", "veg"),
+               "fruit": ("fruit", "fruits")}
+IMAGE_TYPES = {".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg",
+               ".webp": "image/webp"}
 SGT = timezone(timedelta(hours=8), "SGT")
 IS_DEMO = getattr(predictor, "IS_DEMO", False)
 
-CATEGORY_LABELS = {"fruit": "Fruits", "vegetable": "Vegetables"}
+CATEGORY_LABELS = {"vegetable": "Vegetables", "fruit": "Fruits"}  # home screen order: left, right
+FOOTER_MSG = {
+    "home": "Place the item on the scale and touch the item group.",
+    "items": "Touch the item you are weighing.",
+    "scan": "Take a photo of the item, then press SCAN.",
+    "result": "Check the result below.",
+}
 BACK_TO = {"items": "home", "scan": "items", "result": "scan"}
 DEFAULTS = {
     "screen": "home",
@@ -114,21 +126,30 @@ def sync_weight() -> None:
 def render_header(config: dict) -> None:
     item = item_by_id(config, ss.item_id) if ss.screen in ("scan", "result") else None
     weight = ss.scan_weight if ss.screen == "result" else ss.weight_kg
-    unit = f"{money(item['price_per_kg'], config)}/kg" if item else "&nbsp;"
+    unit_price = item["price_per_kg"] if item else 0.0
+    symbol = esc(config["currency"].get("symbol", "$"))
+    decimals = config["currency"].get("decimals", 2)
+    cells = [  # (label, unit, value, decimals)
+        ("TARE", "kg", 0.0, 3),
+        ("WEIGHT", "kg", weight, 3),
+        ("UNIT PRICE", f"{symbol}/kg", unit_price, decimals),
+        ("TOTAL PRICE", symbol, weight * unit_price, decimals),
+    ]
+    labels = "".join(f"<div><small>{u}</small>{l}</div>" for l, u, _, _ in cells)
+    values = "".join(f"<div>{v:.{d}f}</div>" for _, _, v, d in cells)
     show(f"""
         <div class="fs-header">
-          <div class="fs-brand">
-            <div class="fs-logo">🥬</div>
-            <div>
-              <div class="fs-name">{esc(config.get("store_name", "FreshScale"))}</div>
-              <div class="fs-sub">Self-service produce scale</div>
-            </div>
-          </div>
-          <div class="fs-scale">
-            <div class="fs-scale-label">WEIGHT</div>
-            <div class="fs-scale-value">{weight:.3f}<span class="fs-scale-unit">kg</span></div>
-            <div class="fs-scale-price">{unit}</div>
-          </div>
+          <div class="fs-readout-labels">{labels}</div>
+          <div class="fs-readout-values">{values}</div>
+        </div>
+    """)
+
+
+def render_footer(config: dict) -> None:
+    show(f"""
+        <div class="fs-footer">
+          <span class="fs-footer-msg">{esc(FOOTER_MSG.get(ss.screen, ""))}</span>
+          <span class="fs-footer-brand">{esc(config.get("store_name", "FreshScale"))}</span>
         </div>
     """)
 
@@ -166,23 +187,42 @@ def render_demo_controls() -> None:
 
 # ---------- screens ----------
 
+@st.cache_data(show_spinner=False)
+def image_data_uri(path: str, mtime: float) -> str:
+    """mtime is part of the cache key, so replacing the file shows the new picture."""
+    data = base64.b64encode(Path(path).read_bytes()).decode()
+    return f"data:{IMAGE_TYPES[Path(path).suffix.lower()]};base64,{data}"
+
+
+def category_image(category: str) -> str | None:
+    for name in IMAGE_NAMES[category]:
+        for ext in IMAGE_TYPES:
+            path = IMAGES_DIR / f"{name}{ext}"
+            if path.is_file():
+                return image_data_uri(str(path), path.stat().st_mtime)
+    return None
+
+
 def screen_home(config: dict) -> None:
-    show('<div class="fs-title">What are you weighing today?</div>')
-    for col, (category, label) in zip(st.columns(2, gap="large"), CATEGORY_LABELS.items()):
-        items = [p for p in config["produce"] if p["category"] == category]
-        enabled = [p for p in items if p["enabled"]]
-        emojis = "".join(p["emoji"] for p in enabled[:3])
-        with col, st.container(key=f"cat_{category}"):
-            show(f"""
-                <div class="fs-cat">
-                  <div class="fs-cat-emoji">{esc(emojis)}</div>
-                  <div class="fs-cat-name">{label}</div>
-                  <div class="fs-cat-count">{len(enabled)} items available</div>
-                </div>
-            """)
-            st.button(f"Choose {label}", key=f"pick_cat_{category}", type="primary",
-                      width="stretch", on_click=go, args=("items",),
-                      kwargs={"category": category})
+    # The buttons are the big tiles; their picture is drawn with CSS ::before:
+    # a photo from app/images/ if there is one, otherwise the produce emojis.
+    rules = []
+    for category in CATEGORY_LABELS:
+        selector = f".st-key-pick_cat_{category} button::before"
+        photo = category_image(category)
+        if photo:
+            rules.append(f'{selector} {{ content: ""; width: min(85%, 30rem); aspect-ratio: 4 / 3; '
+                         f'background: url("{photo}") center / contain no-repeat; }}')
+            continue
+        enabled = [p["emoji"] for p in config["produce"]
+                   if p["category"] == category and p["enabled"]]
+        emojis = "".join(c for c in "".join(enabled[:3]) if c not in '"\\<>')
+        rules.append(f'{selector} {{ content: "{emojis}"; }}')
+    st.markdown(f"<style>{' '.join(rules)}</style>", unsafe_allow_html=True)
+    with st.container(key="cats"):
+        for col, (category, label) in zip(st.columns(2), CATEGORY_LABELS.items()):
+            col.button(label.rstrip("s"), key=f"pick_cat_{category}", width="stretch",
+                       on_click=go, args=("items",), kwargs={"category": category})
 
 
 def item_tile(item: dict, config: dict) -> None:
@@ -414,14 +454,17 @@ def main() -> None:
         st.stop()
 
     render_demo_controls()
+    if IS_DEMO:  # the sidebar toggle for demo controls lives in Streamlit's toolbar
+        st.markdown('<style>[data-testid="stHeader"] { display: block; }</style>',
+                    unsafe_allow_html=True)
     render_header(config)
-    render_nav()
-    {
-        "home": screen_home,
-        "items": screen_items,
-        "scan": screen_scan,
-        "result": screen_result,
-    }.get(ss.screen, screen_home)(config)
+    if ss.screen in ("items", "scan", "result"):
+        with st.container(key="body"):
+            render_nav()
+            {"items": screen_items, "scan": screen_scan, "result": screen_result}[ss.screen](config)
+    else:
+        screen_home(config)
+    render_footer(config)
 
 
 main()
