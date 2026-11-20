@@ -66,25 +66,25 @@ produce:
     category: vegetable
     emoji: "🥒"
     price_per_kg: 3.50
-    enabled: true
+    enabled: false
   - id: okra
     name: Okra
     category: vegetable
     emoji: "🫛"
     price_per_kg: 7.90
-    enabled: true
+    enabled: false
   - id: potato
     name: Potato
     category: vegetable
     emoji: "🥔"
     price_per_kg: 2.60
-    enabled: true
+    enabled: false
   - id: bitter_gourd
     name: Bitter Gourd
     category: vegetable
     emoji: "🥬"
     price_per_kg: 5.90
-    enabled: true
+    enabled: false
   - id: onion
     name: Onion
     category: vegetable
