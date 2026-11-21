@@ -10,6 +10,7 @@ from pathlib import Path
 import streamlit as st
 from PIL import Image, ImageOps, UnidentifiedImageError
 
+import pipeline
 import views
 from backend import TYPES
 from components import BARCODE_SVG, bump_nonce, icon_svg, label_of, produce_svg
@@ -202,6 +203,7 @@ def select(scan, prices: dict[str, float]) -> None:
 @st.dialog("Why this price?", width="large")
 def why_dialog(result: dict) -> None:
     """Pop-up with the blemish card and forecast row; never grows the page."""
+    pipeline.ensure_forecast(result, st.session_state.image)  # forecast runs only when asked for
     st.markdown(_why_panel(result), unsafe_allow_html=True)
 
 

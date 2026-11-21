@@ -1,7 +1,0 @@
-1: Item not recognised. Please place the produce on the scale and scan again.
-2: Please scan again. If the item is in a bag, open the bag.
-3: Please weigh different items separately.
-4: This looks like {detected}. Please check your selection and scan again.
-5: This item can't be sold. Please set it aside; staff have been notified.
-6: Please scan again. If the item is in a bag, open the bag.
-staff_after_failed_scans: A staff member is on the way to help.

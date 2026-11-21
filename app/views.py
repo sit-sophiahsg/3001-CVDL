@@ -54,7 +54,7 @@ def compose(image: Image.Image, items: list[dict], boxes: bool = True,
             x0, y0, x1, y1 = (int(v) for v in item["box"])
             region = base.crop((x0, y0, x1, y1))
             heat = item["gradcam"].convert("RGBA").resize(region.size)
-            base.paste(Image.blend(region, heat, 0.5), (x0, y0))
+            base.paste(Image.blend(region, heat, item.get("cam_alpha", 0.5)), (x0, y0))
     if blemish:
         base = Image.alpha_composite(base, _blemish_layer(base.size, items))
     layer = Image.new("RGBA", base.size, (0, 0, 0, 0))
@@ -63,7 +63,7 @@ def compose(image: Image.Image, items: list[dict], boxes: bool = True,
     note_font = _font(max(12, base.size[1] // 45))
     for index, item in enumerate(items, start=1):
         x0, y0, x1, y1 = (int(v) for v in item["box"])
-        if cam:
+        if cam and "cam_alpha" not in item:  # stand-in only; the models' occlusion map is real
             draw.text((x0 + 8, y1 - 8), "Grad-CAM placeholder", font=note_font, anchor="lb",
                       fill="white", stroke_width=2, stroke_fill="black")
         if boxes:

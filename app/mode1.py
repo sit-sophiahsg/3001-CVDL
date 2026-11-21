@@ -8,6 +8,7 @@ import altair as alt
 import pandas as pd
 import streamlit as st
 
+import pipeline
 import views
 from components import label_of
 from mode2 import banner_for, is_priced
@@ -40,8 +41,10 @@ def _top_row() -> None:
         st.markdown(f'<div class="mv-head"><h1 class="mv-title">What the models saw</h1>'
                     f'<span class="mv-sub">Last scan · selected type: '
                     f'{escape(label_of(st.session_state.selected_type))}</span></div>', unsafe_allow_html=True)
-        st.markdown('<div class="standin" role="note">Stand-in results: these values come from '
-                    '<code>backend.analyse</code>, not the trained models yet.</div>', unsafe_allow_html=True)
+        result = st.session_state.result
+        if result is not None and result.get("simulated"):  # only a forced rule uses the stand-in
+            st.markdown('<div class="standin" role="note">Simulated result (developer control): '
+                        'not from the models.</div>', unsafe_allow_html=True)
         with st.container(key="devbox", horizontal=True, vertical_alignment="bottom"):
             st.markdown('<span class="dev-tag">DEVELOPER</span>', unsafe_allow_html=True)
             st.selectbox("Simulate outcome", list(SIM_OPTIONS), format_func=SIM_OPTIONS.get,
@@ -90,14 +93,19 @@ def _thresholds_card(thresholds: dict) -> str:
 
 
 def _forecast_strip(image, item: dict) -> str:
-    curve = item.get("curve", [])
+    graded = dict(zip(_curve_days(item), item.get("curve", [])))
     cells = []
     for label, day, frame in views.forecast_frames(image, item):
-        grade = f"graded {curve[day]:.0%}" if day < len(curve) else ""
+        grade = f"graded {graded[day]:.0%}" if day in graded else ""
         cells.append(f'<div><img src="{views.data_uri(frame, 220)}" alt="{escape(label)}">'
                      f'<b>{escape(label)}</b><span>{grade}</span></div>')
     return (f'<span class="why-title">Forecast (item #1)</span><div class="mv-fc">{"".join(cells)}</div>'
             f'<span class="illus">Illustration (AI-generated), not used for the price</span>')
+
+
+def _curve_days(item: dict) -> list[int]:
+    """Days for each curve point: 0, 1, 3, 7 for the models; 0..7 for the stand-in."""
+    return list(item.get("curve_days") or range(len(item.get("curve", []))))
 
 
 def _items_table(result: dict) -> pd.DataFrame:
@@ -125,15 +133,22 @@ def render(set_view) -> None:
                 st.button("Go to Shopper", key="go_shopper", on_click=set_view, args=("Shopper",))
             return
 
+        if result["items"] and "forecasts" not in result["items"][0]:
+            with st.spinner("Running the forecast model…"):
+                pipeline.ensure_forecast(result, image)  # on request only; stored on the result
         with st.container(key="mv_cols"):
             left, right = st.columns([1.6, 1])
             with left, st.container(key="mv_left"):
                 with st.container(horizontal=True, key="mv_toggles"):
                     boxes = st.toggle("Boxes (detector)", key="ov_boxes")
                     blemish = st.toggle("Blemish mask (U-Net)", key="ov_blemish")
-                    cam = st.toggle("Grad-CAM (placeholder)", key="ov_cam")
+                    cam = st.toggle("Occlusion map (freshness)", key="ov_cam")
+                if cam and any("gradcam" not in it for it in result["items"]):
+                    with st.spinner("Computing the occlusion map…"):
+                        pipeline.ensure_occlusion(result, image)
                 composed = views.data_uri(views.compose(image, result["items"], boxes, blemish, cam), 1280)
-                note = '<span class="mv-photo-note">Grad-CAM overlay is a placeholder</span>' if cam else ""
+                note = ('<span class="mv-photo-note">Grad-CAM overlay is a placeholder</span>'
+                        if cam and result.get("simulated") else "")
                 st.markdown(f'<div class="mv-photo-box"><img class="mv-photo" src="{composed}" alt="Scan with '
                             f'detector boxes, blemish areas and attention overlay">{note}</div>',
                             unsafe_allow_html=True)
@@ -149,8 +164,9 @@ def render(set_view) -> None:
                     st.dataframe(_items_table(result), hide_index=True)
                 with curve_tab:
                     st.markdown('<span class="card-tag">FRESHNESS CURVE (ITEM #1)</span>', unsafe_allow_html=True)
-                    curve = result["items"][0]["curve"] if result["items"] else []
-                    points = pd.DataFrame({"day": list(range(len(curve))), "freshness": curve})
+                    first = result["items"][0] if result["items"] else {}
+                    curve = first.get("curve", [])
+                    points = pd.DataFrame({"day": _curve_days(first), "freshness": curve})
                     chart = alt.Chart(points).mark_line(point=True, color="#1F6F47").encode(
                         x=alt.X("day:Q", title="Days from today"),
                         y=alt.Y("freshness:Q", scale=alt.Scale(domain=[0, 1]), axis=alt.Axis(format="%")),

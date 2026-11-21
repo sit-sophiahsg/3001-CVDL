@@ -1,11 +1,12 @@
 from __future__ import annotations
 
+import random
 import sys
 from datetime import datetime
 from pathlib import Path
 
 import streamlit as st
-from PIL import Image, ImageDraw
+from PIL import Image, ImageDraw, ImageOps
 
 APP_DIR = Path(__file__).parent
 if str(APP_DIR) not in sys.path:
@@ -14,6 +15,8 @@ if str(APP_DIR) not in sys.path:
 import backend
 import mode1
 import mode2
+import models
+import pipeline
 from components import LOGO_SVG, load_prices, log_scan, reset_scan_state, style
 
 st.set_page_config(page_title="FreshMart Produce Scale", page_icon="🥬", layout="wide",
@@ -22,6 +25,7 @@ st.set_page_config(page_title="FreshMart Produce Scale", page_icon="🥬", layou
 PRICES = load_prices()
 TYPES = backend.TYPES
 VIEWS = ["Shopper", "Model view"]
+DEMO_DIR = APP_DIR / "demo"
 
 # Widget keys that must survive while their widget is not on screen (Model view
 # controls are not rendered in Shopper mode, and Streamlit drops unrendered widget state).
@@ -29,6 +33,11 @@ PERSISTENT_WIDGET_KEYS = ("simulate_rule", "weight_kg", "ov_boxes", "ov_blemish"
 
 
 def demo_image() -> Image.Image:
+    """A random photo from app/demo/*.jpg if there is one, otherwise the drawn demo image."""
+    photos = sorted(p for p in DEMO_DIR.glob("*") if p.suffix.lower() in (".jpg", ".jpeg")) if DEMO_DIR.is_dir() else []
+    if photos:
+        with Image.open(random.choice(photos)) as photo:
+            return ImageOps.exif_transpose(photo).convert("RGB")
     image = Image.new("RGB", (900, 600), "#dff2e1")
     draw = ImageDraw.Draw(image)
     draw.rectangle((0, 410, 900, 600), fill="#a8cf8d")
@@ -55,6 +64,7 @@ def init_state() -> None:
         "ov_cam": False,
         "view": "Shopper",
         "_view_prev": "Shopper",
+        "model_error": None,
     }
     for key, value in defaults.items():
         st.session_state.setdefault(key, value)
@@ -85,21 +95,33 @@ def on_reset() -> None:
 
 # ---------------------------------------------------------------- scan
 def scan() -> bool:
-    """Run the stand-in backend on the stored photo. Returns False if there is no photo."""
+    """Auto: the real models (pipeline.analyse_real). A forced rule: the stand-in backend.
+
+    Returns False if there is no photo, or if the models could not be loaded.
+    """
     image = st.session_state.image
     if image is None:  # never fall back to the demo image silently (audit risk 2)
         st.session_state.screen = "welcome"
         return False
-    result = backend.analyse(
-        image, st.session_state.selected_type, float(st.session_state.weight_kg),
-        st.session_state.failed_scans, st.session_state.simulate_rule,
-    )
+    simulate = str(st.session_state.simulate_rule or "auto")
+    args = (image, st.session_state.selected_type, float(st.session_state.weight_kg), st.session_state.failed_scans)
+    if simulate == "auto":
+        try:
+            models.load_models()
+        except Exception as exc:  # noqa: BLE001 - e.g. no internet and nothing cached
+            st.session_state.model_error = (
+                "The trained models could not be loaded, so Auto (models decide) cannot run. "
+                "Check the internet connection (or set FRESHMART_MODELS_DIR). The simulated outcomes in "
+                f"Model view still work. Details: {type(exc).__name__}: {str(exc).splitlines()[0][:200] if str(exc) else ''}")
+            return False
+        st.session_state.model_error = None
+        result = pipeline.analyse_real(*args)
+    else:
+        result = backend.analyse(*args, simulate)
     st.session_state.result = result
     rule_id = result["rule_id"]
-    if rule_id in (1, 2, 6):
-        st.session_state.failed_scans += 1
-    elif rule_id == 7:
-        st.session_state.failed_scans = 0
+    # decide() counts failed scans (and raises the staff alert); the app only stores the count
+    st.session_state.failed_scans = 0 if rule_id == 7 else int(result["failed_scans"])
     entry = {
         "time": datetime.now().isoformat(timespec="seconds"),
         "selected_type": st.session_state.selected_type,
@@ -146,6 +168,11 @@ def main() -> None:
     navbar()  # before the mode content, so st.rerun() never skips it
     view = st.session_state.get("view") or st.session_state._view_prev
     with st.container(key="page"):
+        error = st.session_state.model_error or (
+            None if PRICES else "The model bundle (prices, rules and models) could not be downloaded. "
+                                "Check the internet connection (or set FRESHMART_MODELS_DIR).")
+        if error:
+            st.error(error)
         if view == "Model view":
             mode1.render(set_view)
         else:

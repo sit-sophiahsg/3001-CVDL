@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import csv
+import os
 from pathlib import Path
 from urllib.parse import quote
 
@@ -340,16 +341,23 @@ def style() -> None:
 
 # ---------------------------------------------------------------- data + state
 def load_prices() -> dict[str, float]:
-    path = ROOT / "configs" / "prices.csv"
-    if not path.exists():
+    """Price per kg from the model bundle's prices.csv ({} if the bundle cannot be read)."""
+    import models
+    try:
+        return dict(models.load_config().prices)
+    except Exception:  # noqa: BLE001 - shown as one st.error by app.py; tiles fall back to 0.00
         return {}
-    with path.open(newline="", encoding="utf-8") as file:
-        return {row["produce"]: float(row["price_per_kg"]) for row in csv.DictReader(file)}
+
+
+def log_dir() -> Path:
+    """FRESHMART_LOG_DIR, default logs/ in the repo root."""
+    folder = os.environ.get("FRESHMART_LOG_DIR")
+    return Path(folder) if folder else ROOT / "logs"
 
 
 def log_scan(entry: dict) -> None:
-    path = ROOT / "logs" / "scans.csv"
-    path.parent.mkdir(exist_ok=True)
+    path = log_dir() / "scans.csv"
+    path.parent.mkdir(parents=True, exist_ok=True)
     exists = path.exists()
     with path.open("a", newline="", encoding="utf-8") as file:
         writer = csv.DictWriter(file, fieldnames=["time", "selected_type", "rule_id", "staff_alert"])
