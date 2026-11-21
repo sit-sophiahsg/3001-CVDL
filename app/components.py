@@ -355,8 +355,7 @@ def log_dir() -> Path:
     return Path(folder) if folder else ROOT / "logs"
 
 
-def log_scan(entry: dict) -> None:
-    path = log_dir() / "scans.csv"
+def _append_log(path: Path, entry: dict) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     exists = path.exists()
     with path.open("a", newline="", encoding="utf-8") as file:
@@ -364,6 +363,21 @@ def log_scan(entry: dict) -> None:
         if not exists:
             writer.writeheader()
         writer.writerow(entry)
+
+
+def log_scan(entry: dict) -> None:
+    """Append time, selected type, rule and staff alert (never the photo).
+
+    Falls back to the system temp folder if the log folder is read-only (hosted deployments);
+    a log that cannot be written never breaks a scan.
+    """
+    import tempfile
+    for folder in (log_dir(), Path(tempfile.gettempdir()) / "freshmart_logs"):
+        try:
+            _append_log(folder / "scans.csv", entry)
+            return
+        except OSError:
+            continue
 
 
 def bump_nonce() -> None:
