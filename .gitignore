@@ -1,3 +1,6 @@
 .venv/
 __pycache__/
 *.pyc
+logs/
+design_ref/
+ui_audit.md
