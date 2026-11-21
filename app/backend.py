@@ -12,7 +12,6 @@ import yaml
 
 TYPES = ["apple", "banana", "orange", "capsicum", "tomato", "potato"]
 TIERS = {"A": "Full price", "B": "20% off", "C": "50% off", "D": "Not for sale"}
-SIMULATE_RULE = "auto"
 CONFIG_DIR = Path(__file__).parent.parent / "configs"
 
 
@@ -34,18 +33,27 @@ def _preview(crop: Image.Image, days: int) -> Image.Image:
     return ImageEnhance.Color(crop).enhance(max(0.35, 1 - days * 0.08))
 
 
-def analyse(image: Image.Image, selected_type: str, weight_kg: float, failed_scans: int) -> dict[str, Any]:
-    """Return a realistic stand-in ScanResult; replace this function with real models later."""
-    seed = int(hashlib.sha256(image.tobytes()).hexdigest()[:8], 16)
-    rng = random.Random(seed)
+def analyse(image: Image.Image, selected_type: str, weight_kg: float, failed_scans: int,
+            simulate_rule: str = "auto") -> dict[str, Any]:
+    """Return a realistic stand-in ScanResult; replace this function with real models later.
+
+    ``simulate_rule`` is "auto" (stand-in picks a rule) or "1".."7" to force one rule.
+    """
+    digest = hashlib.sha256(image.tobytes())
+    digest.update(f"{selected_type}|{weight_kg:.3f}".encode())
+    rng = random.Random(int(digest.hexdigest()[:8], 16))
     width, height = image.size
-    rule = int(SIMULATE_RULE) if SIMULATE_RULE != "auto" else rng.choice([3, 4, 7, 7, 7])
-    detected = selected_type if rule not in (3, 4) else rng.choice(
-        [item for item in TYPES if item != selected_type]
-    )
+    simulate_rule = str(simulate_rule or "auto")
+    rule = int(simulate_rule) if simulate_rule != "auto" else rng.choice([3, 4, 7, 7, 7])
+    if rule == 1:
+        detected = "unknown"
+    elif rule in (3, 4):
+        detected = rng.choice([item for item in TYPES if item != selected_type])
+    else:
+        detected = selected_type
     items = []
     for index in range(2 if rule == 3 else 1):
-        freshness = 0.9 if rule == 7 else (0.18 if rule == 5 else rng.uniform(0.35, 0.9))
+        freshness = rng.uniform(0.35, 0.95) if rule == 7 else (0.18 if rule == 5 else rng.uniform(0.35, 0.9))
         tier = "D" if rule in (5, 6) else _tier(freshness)
         if rule == 5:
             tier, freshness = "D", 0.12
@@ -54,8 +62,9 @@ def analyse(image: Image.Image, selected_type: str, weight_kg: float, failed_sca
         crop = image.crop((x0, y0, x1, y1))
         mask = np.zeros((max(1, y1 - y0), max(1, x1 - x0)), dtype=bool)
         mask[mask.shape[0] // 3:, mask.shape[1] // 3:] = freshness < 0.4
+        produce = selected_type if rule == 3 and index == 0 else detected
         items.append({
-            "box": [x0, y0, x1, y1], "produce": detected, "det_conf": rng.uniform(0.84, 0.98),
+            "box": [x0, y0, x1, y1], "produce": produce, "det_conf": rng.uniform(0.84, 0.98),
             "freshness": freshness, "tier": tier, "fresh_conf": rng.uniform(0.78, 0.97),
             "days_left": max(1, round(freshness * 8, 1)), "blemish_mask": mask,
             "blemish_pct": float(mask.mean() * 100), "seg_conf": rng.uniform(0.76, 0.95),

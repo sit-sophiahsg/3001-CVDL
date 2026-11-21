@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import io
 import sys
 from datetime import datetime
 from pathlib import Path
@@ -15,13 +14,18 @@ if str(APP_DIR) not in sys.path:
 import backend
 import mode1
 import mode2
-from components import load_prices, log_scan, reset_scan_state, style
+from components import LOGO_SVG, load_prices, log_scan, reset_scan_state, style
 
-st.set_page_config(page_title="FreshMart Produce Scale", page_icon="🥬", layout="wide")
-style()
+st.set_page_config(page_title="FreshMart Produce Scale", page_icon="🥬", layout="wide",
+                   initial_sidebar_state="collapsed")
 
 PRICES = load_prices()
 TYPES = backend.TYPES
+VIEWS = ["Shopper", "Model view"]
+
+# Widget keys that must survive while their widget is not on screen (Model view
+# controls are not rendered in Shopper mode, and Streamlit drops unrendered widget state).
+PERSISTENT_WIDGET_KEYS = ("simulate_rule", "weight_kg", "ov_boxes", "ov_blemish", "ov_cam")
 
 
 def demo_image() -> Image.Image:
@@ -34,58 +38,65 @@ def demo_image() -> Image.Image:
     return image
 
 
-def read_input_image() -> Image.Image:
-    source = st.sidebar.radio("Input source", ["Bundled demo", "Upload photo", "Camera snapshot"])
-    if source == "Upload photo":
-        uploaded = st.sidebar.file_uploader("Choose an image", type=["png", "jpg", "jpeg"])
-        if uploaded:
-            return Image.open(io.BytesIO(uploaded.getvalue())).convert("RGB")
-    elif source == "Camera snapshot":
-        captured = st.sidebar.camera_input("Take a snapshot")
-        if captured:
-            return Image.open(io.BytesIO(captured.getvalue())).convert("RGB")
-    return demo_image()
-
-
 def init_state() -> None:
     defaults = {
-        "screen": "idle",
-        "mode": "Mode 2 · Shopper",
+        "screen": "welcome",
         "selected_type": None,
         "weight_kg": 0.25,
         "image": None,
         "result": None,
         "failed_scans": 0,
         "scan_logs": [],
+        "simulate_rule": "auto",
+        "input_nonce": 0,
+        "staff_called": False,
+        "show_why": False,
+        "ov_boxes": True,
+        "ov_blemish": True,
+        "ov_cam": False,
+        "view": "Shopper",
+        "_view_prev": "Shopper",
     }
     for key, value in defaults.items():
         st.session_state.setdefault(key, value)
+    if st.session_state.screen not in mode2.SCREENS:  # e.g. old "idle"/"weigh" screens
+        st.session_state.screen = "welcome"
+    for key in PERSISTENT_WIDGET_KEYS:
+        st.session_state[key] = st.session_state[key]
 
 
-def do_reset() -> None:
+# ---------------------------------------------------------------- callbacks
+def on_view_change() -> None:
+    """segmented_control returns None when the active option is clicked again: undo that."""
+    if st.session_state.view is None:
+        st.session_state.view = st.session_state._view_prev
+    else:
+        st.session_state._view_prev = st.session_state.view
+
+
+def set_view(view: str) -> None:
+    """For buttons that switch mode; only ever used as an on_click callback."""
+    st.session_state.view = view
+    st.session_state._view_prev = view
+
+
+def on_reset() -> None:
     reset_scan_state()
-    st.rerun()
 
 
-def sidebar() -> None:
-    st.sidebar.title("FreshMart")
-    st.sidebar.caption("Produce quality scale · student demo")
-    st.session_state.mode = st.sidebar.radio("View", ["Mode 2 · Shopper", "Mode 1 · Model view"],
-                                               index=0 if st.session_state.mode.startswith("Mode 2") else 1)
-    backend.SIMULATE_RULE = st.sidebar.selectbox(
-        "Developer · Simulate rule", ["auto", "1", "2", "3", "4", "5", "6", "7"],
-    )
-    if st.sidebar.button("Reset scan", use_container_width=True):
-        do_reset()
-    st.sidebar.caption("Student demo — not affiliated with any retailer.")
-
-
-def scan() -> None:
-    image = st.session_state.image or demo_image()
+# ---------------------------------------------------------------- scan
+def scan() -> bool:
+    """Run the stand-in backend on the stored photo. Returns False if there is no photo."""
+    image = st.session_state.image
+    if image is None:  # never fall back to the demo image silently (audit risk 2)
+        st.session_state.screen = "welcome"
+        return False
     result = backend.analyse(
-        image, st.session_state.selected_type, st.session_state.weight_kg, st.session_state.failed_scans
+        image, st.session_state.selected_type, float(st.session_state.weight_kg),
+        st.session_state.failed_scans, st.session_state.simulate_rule,
     )
     st.session_state.result = result
+    st.session_state.show_why = False
     rule_id = result["rule_id"]
     if rule_id in (1, 2, 6):
         st.session_state.failed_scans += 1
@@ -100,17 +111,48 @@ def scan() -> None:
     st.session_state.scan_logs.append(entry)
     log_scan(entry)
     st.session_state.screen = "result"
+    return True
+
+
+# ---------------------------------------------------------------- frame
+def navbar() -> None:
+    with st.container(key="navbar"):
+        left, mid, right = st.columns([1, 1, 1], vertical_alignment="center")
+        with left:
+            st.markdown(
+                f'<div class="brand">{LOGO_SVG}<div style="display:flex;flex-direction:column">'
+                '<span class="brand-name">FreshMart</span>'
+                '<span class="brand-sub">Smart produce scale · student demo</span></div></div>',
+                unsafe_allow_html=True,
+            )
+        with mid:
+            with st.container(key="nav_mid", horizontal=True, horizontal_alignment="center"):
+                # The "Shopper" default is seeded in Session State (init_state), not via
+                # default=: callbacks write st.session_state.view, and a non-None default
+                # plus a Session State write makes Streamlit show a warning. A constant
+                # default also keeps the widget's identity stable across reruns.
+                st.segmented_control("View", VIEWS, key="view", label_visibility="collapsed",
+                                     default=None, on_change=on_view_change)
+        with right:
+            with st.container(key="nav_right", horizontal=True, horizontal_alignment="right",
+                              vertical_alignment="center"):
+                st.markdown(f'<span class="nav-date">{datetime.now():%d/%m/%y}</span>',
+                            unsafe_allow_html=True)
+                st.button("Reset scan", key="nav_reset", on_click=on_reset)
 
 
 def main() -> None:
     init_state()
-    sidebar()
-    st.markdown('<div class="brand"><b>FreshMart</b><span>SMART PRODUCE SCALE</span></div>', unsafe_allow_html=True)
-    if st.session_state.mode.startswith("Mode 2"):
-        mode2.render(st, scan, read_input_image)
-    else:
-        mode1.render(st, scan, read_input_image)
-    st.caption("Student demo — not affiliated with any retailer.")
+    style()
+    navbar()  # before the mode content, so st.rerun() never skips it
+    view = st.session_state.get("view") or st.session_state._view_prev
+    with st.container(key="page"):
+        if view == "Model view":
+            mode1.render(set_view)
+        else:
+            mode2.render(scan, demo_image, PRICES)
+            st.markdown('<p class="foot-note">Student demo, not affiliated with any retailer.</p>',
+                        unsafe_allow_html=True)
 
 
 if __name__ == "__main__":
