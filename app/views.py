@@ -51,6 +51,8 @@ def compose(image: Image.Image, items: list[dict], boxes: bool = True,
     base = image.convert("RGBA")
     if cam:
         for item in items:
+            if item.get("gradcam") is None:  # occlusion map not computed for this item
+                continue
             x0, y0, x1, y1 = (int(v) for v in item["box"])
             region = base.crop((x0, y0, x1, y1))
             heat = item["gradcam"].convert("RGBA").resize(region.size)

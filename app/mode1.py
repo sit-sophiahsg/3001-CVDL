@@ -84,11 +84,12 @@ def _trace_card(fired: int) -> str:
     return f'<div class="card" style="gap:6px"><span class="card-tag">RULES, CHECKED IN ORDER</span>{"".join(rows)}</div>'
 
 
-def _thresholds_card(thresholds: dict) -> str:
+def _thresholds_card(thresholds: dict, simulated: bool = True) -> str:
+    label = "STAND-IN VALUES" if simulated else "CALIBRATED ON VALIDATION"
     cells = "".join(f'<span>{escape(str(k))}</span><span class="mono">{v:.2f}</span>'
                     if isinstance(v, (int, float)) else f'<span>{escape(str(k))}</span><span class="mono">{escape(str(v))}</span>'
                     for k, v in thresholds.items())
-    return (f'<div class="card" style="gap:6px"><span class="card-tag">THRESHOLDS (STAND-IN VALUES)</span>'
+    return (f'<div class="card" style="gap:6px"><span class="card-tag">THRESHOLDS ({label})</span>'
             f'<div class="thr">{cells}</div></div>')
 
 
@@ -143,9 +144,10 @@ def render(set_view) -> None:
                     boxes = st.toggle("Boxes (detector)", key="ov_boxes")
                     blemish = st.toggle("Blemish mask (U-Net)", key="ov_blemish")
                     cam = st.toggle("Occlusion map (freshness)", key="ov_cam")
-                if cam and any("gradcam" not in it for it in result["items"]):
+                item_ix = int(st.session_state.get("mv_item", 0))  # item #1 unless another is selected
+                if cam and 0 <= item_ix < len(result["items"]) and "gradcam" not in result["items"][item_ix]:
                     with st.spinner("Computing the occlusion map…"):
-                        pipeline.ensure_occlusion(result, image)
+                        pipeline.ensure_occlusion(result, image, item_ix)
                 composed = views.data_uri(views.compose(image, result["items"], boxes, blemish, cam), 1280)
                 note = ('<span class="mv-photo-note">Grad-CAM overlay is a placeholder</span>'
                         if cam and result.get("simulated") else "")
@@ -158,7 +160,7 @@ def render(set_view) -> None:
                 decision, items, curve_tab, log = st.tabs(["Decision", "Items", "Curve", "Log"])
                 with decision:
                     st.markdown(_decision_card(result) + _trace_card(result["rule_id"])
-                                + _thresholds_card(result.get("thresholds", {})), unsafe_allow_html=True)
+                                + _thresholds_card(result.get("thresholds", {}), bool(result.get("simulated"))), unsafe_allow_html=True)
                 with items:
                     st.markdown('<span class="card-tag">ITEMS IN THIS SCAN</span>', unsafe_allow_html=True)
                     st.dataframe(_items_table(result), hide_index=True)

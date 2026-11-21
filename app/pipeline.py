@@ -258,13 +258,17 @@ def _occlusion_heat(session, crop: Image.Image) -> np.ndarray:
     return heat / peak if peak > 0 else heat
 
 
-def ensure_occlusion(result: dict | None, image: Image.Image | None) -> None:
-    """Occlusion map per item (in place of Grad-CAM, which needs gradients ONNX does not have)."""
+def ensure_occlusion(result: dict | None, image: Image.Image | None, index: int = 0) -> None:
+    """Occlusion map for one item (in place of Grad-CAM, which needs gradients ONNX does not have).
+
+    Stored on that item, so each (scan, item) is computed at most once.
+    """
     if not result or image is None or result.get("simulated"):
         return
-    todo = [it for it in result.get("items", []) if "gradcam" not in it]
-    if not todo:
+    items = result.get("items", [])
+    if not 0 <= index < len(items) or "gradcam" in items[index]:
         return
+    todo = [items[index]]
     sess = models.load_models().sessions
     t = time.perf_counter()
     rgb_image = image.convert("RGB")
