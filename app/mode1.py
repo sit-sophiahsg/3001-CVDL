@@ -35,11 +35,13 @@ D = "&#36;"
 
 
 def _top_row() -> None:
-    left, right = st.columns([1, 1.2], vertical_alignment="bottom")
-    with left:
-        st.markdown(f'<h1 class="mv-title">What the models saw</h1><span class="mv-sub">Last scan · selected type: '
-                    f'{escape(label_of(st.session_state.selected_type))}</span>', unsafe_allow_html=True)
-    with right:
+    """Heading, stand-in note and Developer box in one compact row (wraps when narrow)."""
+    with st.container(key="mv_top", horizontal=True, vertical_alignment="center"):
+        st.markdown(f'<div class="mv-head"><h1 class="mv-title">What the models saw</h1>'
+                    f'<span class="mv-sub">Last scan · selected type: '
+                    f'{escape(label_of(st.session_state.selected_type))}</span></div>', unsafe_allow_html=True)
+        st.markdown('<div class="standin" role="note">Stand-in results: these values come from '
+                    '<code>backend.analyse</code>, not the trained models yet.</div>', unsafe_allow_html=True)
         with st.container(key="devbox", horizontal=True, vertical_alignment="bottom"):
             st.markdown('<span class="dev-tag">DEVELOPER</span>', unsafe_allow_html=True)
             st.selectbox("Simulate outcome", list(SIM_OPTIONS), format_func=SIM_OPTIONS.get,
@@ -115,8 +117,6 @@ def _items_table(result: dict) -> pd.DataFrame:
 def render(set_view) -> None:
     with st.container(key="modelpage"):
         _top_row()
-        st.markdown('<div class="standin" role="note">Stand-in results: these values come from '
-                    '<code>backend.analyse</code>, not the trained models yet.</div>', unsafe_allow_html=True)
         result = st.session_state.result
         image = st.session_state.image
         if result is None or image is None:
@@ -125,35 +125,41 @@ def render(set_view) -> None:
                 st.button("Go to Shopper", key="go_shopper", on_click=set_view, args=("Shopper",))
             return
 
-        left, right = st.columns([1.6, 1])
-        with left, st.container(key="mv_left"):
-            with st.container(horizontal=True):
-                boxes = st.toggle("Boxes (detector)", key="ov_boxes")
-                blemish = st.toggle("Blemish mask (U-Net)", key="ov_blemish")
-                cam = st.toggle("Grad-CAM (placeholder)", key="ov_cam")
-            composed = views.data_uri(views.compose(image, result["items"], boxes, blemish, cam), 1280)
-            note = '<span class="illus">Grad-CAM overlay is a placeholder</span>' if cam else ""
-            st.markdown(f'<img class="mv-photo" src="{composed}" alt="Scan with detector boxes, '
-                        f'blemish areas and attention overlay">{note}', unsafe_allow_html=True)
-            if result["items"]:
-                st.markdown(_forecast_strip(image, result["items"][0]), unsafe_allow_html=True)
-        with right:
-            st.markdown(_decision_card(result) + _trace_card(result["rule_id"])
-                        + _thresholds_card(result.get("thresholds", {})), unsafe_allow_html=True)
-
-        with st.container(key="mv_items"):
-            st.markdown('<span class="card-tag">ITEMS IN THIS SCAN</span>', unsafe_allow_html=True)
-            st.dataframe(_items_table(result), hide_index=True)
-        with st.expander("Freshness curve"):
-            curve = result["items"][0]["curve"] if result["items"] else []
-            points = pd.DataFrame({"day": list(range(len(curve))), "freshness": curve})
-            chart = alt.Chart(points).mark_line(point=True, color="#1F6F47").encode(
-                x=alt.X("day:Q", title="Days from today"),
-                y=alt.Y("freshness:Q", scale=alt.Scale(domain=[0, 1]), axis=alt.Axis(format="%")),
-            )
-            st.altair_chart(chart, use_container_width=True)  # 1.50 altair_chart has no width=
-        with st.expander(f"Session log ({len(st.session_state.scan_logs)})"):
-            if st.session_state.scan_logs:
-                st.dataframe(pd.DataFrame(st.session_state.scan_logs), hide_index=True)
-            else:
-                st.caption("No scans yet.")
+        with st.container(key="mv_cols"):
+            left, right = st.columns([1.6, 1])
+            with left, st.container(key="mv_left"):
+                with st.container(horizontal=True, key="mv_toggles"):
+                    boxes = st.toggle("Boxes (detector)", key="ov_boxes")
+                    blemish = st.toggle("Blemish mask (U-Net)", key="ov_blemish")
+                    cam = st.toggle("Grad-CAM (placeholder)", key="ov_cam")
+                composed = views.data_uri(views.compose(image, result["items"], boxes, blemish, cam), 1280)
+                note = '<span class="mv-photo-note">Grad-CAM overlay is a placeholder</span>' if cam else ""
+                st.markdown(f'<div class="mv-photo-box"><img class="mv-photo" src="{composed}" alt="Scan with '
+                            f'detector boxes, blemish areas and attention overlay">{note}</div>',
+                            unsafe_allow_html=True)
+                if result["items"]:
+                    st.markdown(_forecast_strip(image, result["items"][0]), unsafe_allow_html=True)
+            with right, st.container(key="mv_right"):
+                decision, items, curve_tab, log = st.tabs(["Decision", "Items", "Curve", "Log"])
+                with decision:
+                    st.markdown(_decision_card(result) + _trace_card(result["rule_id"])
+                                + _thresholds_card(result.get("thresholds", {})), unsafe_allow_html=True)
+                with items:
+                    st.markdown('<span class="card-tag">ITEMS IN THIS SCAN</span>', unsafe_allow_html=True)
+                    st.dataframe(_items_table(result), hide_index=True)
+                with curve_tab:
+                    st.markdown('<span class="card-tag">FRESHNESS CURVE (ITEM #1)</span>', unsafe_allow_html=True)
+                    curve = result["items"][0]["curve"] if result["items"] else []
+                    points = pd.DataFrame({"day": list(range(len(curve))), "freshness": curve})
+                    chart = alt.Chart(points).mark_line(point=True, color="#1F6F47").encode(
+                        x=alt.X("day:Q", title="Days from today"),
+                        y=alt.Y("freshness:Q", scale=alt.Scale(domain=[0, 1]), axis=alt.Axis(format="%")),
+                    ).properties(height=240)
+                    st.altair_chart(chart, use_container_width=True)  # 1.50 altair_chart has no width=
+                with log:
+                    st.markdown(f'<span class="card-tag">SESSION LOG ({len(st.session_state.scan_logs)})</span>',
+                                unsafe_allow_html=True)
+                    if st.session_state.scan_logs:
+                        st.dataframe(pd.DataFrame(st.session_state.scan_logs), hide_index=True)
+                    else:
+                        st.caption("No scans yet.")

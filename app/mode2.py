@@ -72,13 +72,13 @@ def go(screen: str) -> None:
 def go_home() -> None:
     """Home / Next item: clear image, selection and result."""
     st.session_state.update(screen="welcome", image=None, selected_type=None, result=None,
-                            show_why=False, staff_called=False)
+                            staff_called=False)
     bump_nonce()
 
 
 def scan_again() -> None:
     """Keep selected_type and failed_scans; ask for a fresh photo."""
-    st.session_state.update(screen="welcome", image=None, result=None, show_why=False)
+    st.session_state.update(screen="welcome", image=None, result=None)
     bump_nonce()
 
 
@@ -102,10 +102,6 @@ def on_photo(widget_key: str) -> None:
     st.session_state.photo_error = None
     st.session_state.screen = "select"
     bump_nonce()
-
-
-def toggle_why() -> None:
-    st.session_state.show_why = not st.session_state.show_why
 
 
 def call_staff() -> None:
@@ -203,6 +199,12 @@ def select(scan, prices: dict[str, float]) -> None:
         st.rerun()
 
 
+@st.dialog("Why this price?", width="large")
+def why_dialog(result: dict) -> None:
+    """Pop-up with the blemish card and forecast row; never grows the page."""
+    st.markdown(_why_panel(result), unsafe_allow_html=True)
+
+
 def _why_panel(result: dict) -> str:
     image = st.session_state.image
     item = result["items"][0]
@@ -213,7 +215,8 @@ def _why_panel(result: dict) -> str:
                      f'<span>{escape(lbl)}</span></div>' for lbl, _, img in views.forecast_frames(image, item))
     return (f'<div class="why-grid"><div class="why-card"><span class="why-title">Blemishes found '
             f'({item["blemish_pct"]:.0f}% of the item)</span>'
-            f'<img class="why-photo" src="{blem}" alt="Your photo with any blemish area marked in red"></div>'
+            f'<div class="why-photo" role="img" aria-label="Your photo with any blemish area marked in red" '
+            f'style="background-image:url({blem})"></div></div>'
             f'<div class="why-card"><span class="why-title">How it may look in a few days</span>'
             f'<div class="fc-grid">{frames}</div>'
             f'<span class="illus">Illustration (AI-generated), not used for the price</span></div></div>')
@@ -243,15 +246,13 @@ def result_priced(result: dict) -> None:
                 f'<span class="t-count">{count} item{"s" if count != 1 else ""} found</span></div>'
                 f'<div class="t-msg" style="color:{colour}">{escape(msg)}</div>',
                 unsafe_allow_html=True)
-            st.button("Hide details" if st.session_state.show_why else "Why this price?",
-                      key="why_toggle", type="tertiary", on_click=toggle_why)
+            if st.button("Why this price?", key="why_toggle", type="tertiary"):
+                why_dialog(result)
         with right:
             strike = f'<span class="t-strike">{D}{weight * unit:.2f}</span>' if discount else ""
             st.markdown(f'<div class="t-right">{strike}<span class="t-total">{D}{total:.2f}</span>'
                         f'<span class="t-calc">{weight:.3f} kg × {D}{unit * (1 - discount):.2f}/kg</span></div>',
                         unsafe_allow_html=True)
-    if st.session_state.show_why:
-        st.markdown(_why_panel(result), unsafe_allow_html=True)
     with st.container(key="ticket_actions", horizontal=True, horizontal_alignment="distribute",
                       vertical_alignment="center"):
         st.button("Back", key="res_back", on_click=go, args=("select",))

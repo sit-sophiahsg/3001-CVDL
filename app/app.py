@@ -50,7 +50,6 @@ def init_state() -> None:
         "simulate_rule": "auto",
         "input_nonce": 0,
         "staff_called": False,
-        "show_why": False,
         "ov_boxes": True,
         "ov_blemish": True,
         "ov_cam": False,
@@ -96,7 +95,6 @@ def scan() -> bool:
         st.session_state.failed_scans, st.session_state.simulate_rule,
     )
     st.session_state.result = result
-    st.session_state.show_why = False
     rule_id = result["rule_id"]
     if rule_id in (1, 2, 6):
         st.session_state.failed_scans += 1
@@ -122,7 +120,8 @@ def navbar() -> None:
             st.markdown(
                 f'<div class="brand">{LOGO_SVG}<div style="display:flex;flex-direction:column">'
                 '<span class="brand-name">FreshMart</span>'
-                '<span class="brand-sub">Smart produce scale · student demo</span></div></div>',
+                '<span class="brand-sub">Smart produce scale · student demo</span>'
+                '<span class="brand-note">Student demo, not affiliated with any retailer.</span></div></div>',
                 unsafe_allow_html=True,
             )
         with mid:
@@ -151,8 +150,6 @@ def main() -> None:
             mode1.render(set_view)
         else:
             mode2.render(scan, demo_image, PRICES)
-            st.markdown('<p class="foot-note">Student demo, not affiliated with any retailer.</p>',
-                        unsafe_allow_html=True)
 
 
 if __name__ == "__main__":
