@@ -24,24 +24,28 @@ def _font(size: int) -> ImageFont.ImageFont:
         return ImageFont.load_default()
 
 
+def blemish_patch(item: dict) -> Image.Image | None:
+    """RGBA patch the size of the item's box: semi-transparent red fill plus a yellow outline (None if no mask)."""
+    mask = np.asarray(item.get("blemish_mask", np.zeros((1, 1), bool)), dtype=bool)
+    if not mask.any():
+        return None
+    mask_img = Image.fromarray(mask.astype(np.uint8) * 255, mode="L")
+    stroke = max(3, min(mask.shape) // 60)
+    grown = mask_img.filter(ImageFilter.MaxFilter(stroke * 2 + 1))
+    outline = Image.fromarray(((np.asarray(grown) > 0) & ~mask).astype(np.uint8) * 255, mode="L")
+    patch = Image.new("RGBA", mask_img.size, (0, 0, 0, 0))
+    patch.paste(Image.new("RGBA", mask_img.size, BLEMISH_RED), (0, 0), mask_img)
+    patch.paste(Image.new("RGBA", mask_img.size, BLEMISH_EDGE), (0, 0), outline)
+    return patch
+
+
 def _blemish_layer(size: tuple[int, int], items: list[dict]) -> Image.Image:
-    """RGBA layer: semi-transparent red fill plus a yellow outline per blemish mask."""
+    """RGBA layer with every item's blemish patch at its box."""
     layer = Image.new("RGBA", size, (0, 0, 0, 0))
     for item in items:
-        mask = np.asarray(item.get("blemish_mask", np.zeros((1, 1), bool)), dtype=bool)
-        if not mask.any():
-            continue
-        x0, y0 = item["box"][:2]
-        mask_img = Image.fromarray(mask.astype(np.uint8) * 255, mode="L")
-        stroke = max(3, min(mask.shape) // 60)
-        grown = mask_img.filter(ImageFilter.MaxFilter(stroke * 2 + 1))
-        outline = Image.fromarray(
-            ((np.asarray(grown) > 0) & ~mask).astype(np.uint8) * 255, mode="L"
-        )
-        patch = Image.new("RGBA", mask_img.size, (0, 0, 0, 0))
-        patch.paste(Image.new("RGBA", mask_img.size, BLEMISH_RED), (0, 0), mask_img)
-        patch.paste(Image.new("RGBA", mask_img.size, BLEMISH_EDGE), (0, 0), outline)
-        layer.alpha_composite(patch, (int(x0), int(y0)))
+        patch = blemish_patch(item)
+        if patch is not None:
+            layer.alpha_composite(patch, (int(item["box"][0]), int(item["box"][1])))
     return layer
 
 

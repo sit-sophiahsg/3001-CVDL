@@ -35,13 +35,19 @@ RULE_NAMES = {
 D = "&#36;"
 
 
-def _top_row() -> None:
+def _top_row(on_upload) -> None:
     """Heading, stand-in note and Developer box in one compact row (wraps when narrow)."""
     with st.container(key="mv_top", horizontal=True, vertical_alignment="center"):
-        st.markdown(f'<div class="mv-head"><h1 class="mv-title">What the models saw</h1>'
-                    f'<span class="mv-sub">Last scan · selected type: '
-                    f'{escape(label_of(st.session_state.selected_type))}</span></div>', unsafe_allow_html=True)
         result = st.session_state.result
+        if result is not None:
+            source = "uploaded photo" if st.session_state.source == "upload" else "last auto-scan"
+            info = f"{source.capitalize()} · selected type: {label_of(st.session_state.selected_type)}"
+        elif st.session_state.image is not None:
+            info = "Still frame captured · select the item in Shopper to grade it"
+        else:
+            info = "Waiting for a still scene"
+        st.markdown(f'<div class="mv-head"><h1 class="mv-title">What the models see, live</h1>'
+                    f'<span class="mv-sub">{escape(info)}</span></div>', unsafe_allow_html=True)
         if result is not None and result.get("simulated"):  # only a forced rule uses the stand-in
             st.markdown('<div class="standin" role="note">Simulated result (developer control): '
                         'not from the models.</div>', unsafe_allow_html=True)
@@ -50,6 +56,12 @@ def _top_row() -> None:
             st.selectbox("Simulate outcome", list(SIM_OPTIONS), format_func=SIM_OPTIONS.get,
                          key="simulate_rule")
             st.number_input("Simulated weight (kg)", 0.05, 5.0, step=0.05, key="weight_kg")
+            key = f"up_{st.session_state.input_nonce}"
+            st.file_uploader("Upload photo (backup)", type=["png", "jpg", "jpeg"], key=key,
+                             on_change=on_upload, args=(key,),
+                             help="A backup if the camera fails: the photo goes through the same path as an auto-scan.")
+    if st.session_state.get("photo_error"):
+        st.error(st.session_state.photo_error)
 
 
 def _decision_card(result: dict) -> str:
@@ -123,57 +135,63 @@ def _items_table(result: dict) -> pd.DataFrame:
     } for i, it in enumerate(result.get("items", []), start=1)])
 
 
-def render(set_view) -> None:
+def render(live_view, on_upload) -> None:
     with st.container(key="modelpage"):
-        _top_row()
+        _top_row(on_upload)
         result = st.session_state.result
         image = st.session_state.image
-        if result is None or image is None:
-            with st.container(key="mv_empty"):
-                st.info("No scan yet. Run one in Shopper mode, then come back here.")
-                st.button("Go to Shopper", key="go_shopper", on_click=set_view, args=("Shopper",))
-            return
-
-        if result["items"] and "forecasts" not in result["items"][0]:
-            with st.spinner("Running the forecast model…"):
-                pipeline.ensure_forecast(result, image)  # on request only; stored on the result
+        # spinners go in fixed slots, so the live view keeps its place in the page (and is not remounted)
+        slot = st.empty()
+        if result is not None and image is not None and result["items"] and "forecasts" not in result["items"][0]:
+            with slot, st.spinner("Running the forecast model…"):
+                pipeline.ensure_forecast(result, image)  # once per scan, stored on the result
+            slot.empty()
         with st.container(key="mv_cols"):
-            left, right = st.columns([1.6, 1])
+            left, right = st.columns([1.7, 1])
             with left, st.container(key="mv_left"):
                 with st.container(horizontal=True, key="mv_toggles"):
-                    boxes = st.toggle("Boxes (detector)", key="ov_boxes")
-                    blemish = st.toggle("Blemish mask (U-Net)", key="ov_blemish")
-                    cam = st.toggle("Occlusion map (freshness)", key="ov_cam")
-                item_ix = int(st.session_state.get("mv_item", 0))  # item #1 unless another is selected
-                if cam and 0 <= item_ix < len(result["items"]) and "gradcam" not in result["items"][item_ix]:
-                    with st.spinner("Computing the occlusion map…"):
-                        pipeline.ensure_occlusion(result, image, item_ix)
-                composed = views.data_uri(views.compose(image, result["items"], boxes, blemish, cam), 1280)
-                note = ('<span class="mv-photo-note">Grad-CAM overlay is a placeholder</span>'
-                        if cam and result.get("simulated") else "")
-                st.markdown(f'<div class="mv-photo-box"><img class="mv-photo" src="{composed}" alt="Scan with '
-                            f'detector boxes, blemish areas and attention overlay">{note}</div>',
+                    st.toggle("Boxes + type (detector)", key="ov_boxes")
+                    st.toggle("Freshness % (ResNet-50)", key="ov_fresh")
+                    st.toggle("Blemish mask (U-Net)", key="ov_blemish")
+                    cam = st.toggle("Occlusion map (item #1)", key="ov_cam")
+                occ_slot = st.empty()
+                if cam and result is not None and image is not None and result["items"] \
+                        and "gradcam" not in result["items"][0]:
+                    with occ_slot, st.spinner("Computing the occlusion map…"):
+                        pipeline.ensure_occlusion(result, image, 0)  # item #1, on demand, cached on the result
+                    occ_slot.empty()
+                live_view("model")
+                st.markdown('<span class="mv-foot">Boxes and types update every frame (detector in the browser). '
+                            'Freshness and the blemish mask come from the last auto-scan, run on the server.</span>',
                             unsafe_allow_html=True)
-                if result["items"]:
-                    st.markdown(_forecast_strip(image, result["items"][0]), unsafe_allow_html=True)
             with right, st.container(key="mv_right"):
                 decision, items, curve_tab, log = st.tabs(["Decision", "Items", "Curve", "Log"])
                 with decision:
-                    st.markdown(_decision_card(result) + _trace_card(result["rule_id"])
-                                + _thresholds_card(result.get("thresholds", {}), bool(result.get("simulated"))), unsafe_allow_html=True)
+                    if result is None:
+                        st.markdown('<p class="mv-none">No scan yet. The scale scans by itself once the items '
+                                    'are still.</p>', unsafe_allow_html=True)
+                    else:
+                        st.markdown(_decision_card(result) + _trace_card(result["rule_id"])
+                                    + _thresholds_card(result.get("thresholds", {}), bool(result.get("simulated"))),
+                                    unsafe_allow_html=True)
                 with items:
                     st.markdown('<span class="card-tag">ITEMS IN THIS SCAN</span>', unsafe_allow_html=True)
-                    st.dataframe(_items_table(result), hide_index=True)
+                    if result is not None:
+                        st.dataframe(_items_table(result), hide_index=True)
                 with curve_tab:
                     st.markdown('<span class="card-tag">FRESHNESS CURVE (ITEM #1)</span>', unsafe_allow_html=True)
-                    first = result["items"][0] if result["items"] else {}
-                    curve = first.get("curve", [])
-                    points = pd.DataFrame({"day": _curve_days(first), "freshness": curve})
-                    chart = alt.Chart(points).mark_line(point=True, color="#1F6F47").encode(
-                        x=alt.X("day:Q", title="Days from today"),
-                        y=alt.Y("freshness:Q", scale=alt.Scale(domain=[0, 1]), axis=alt.Axis(format="%")),
-                    ).properties(height=240)
-                    st.altair_chart(chart, use_container_width=True)  # 1.50 altair_chart has no width=
+                    first = result["items"][0] if result is not None and result["items"] else {}
+                    if first.get("curve"):
+                        points = pd.DataFrame({"day": _curve_days(first), "freshness": first["curve"]})
+                        chart = alt.Chart(points).mark_line(point=True, color="#1F6F47").encode(
+                            x=alt.X("day:Q", title="Days from today"),
+                            y=alt.Y("freshness:Q", scale=alt.Scale(domain=[0, 1]), axis=alt.Axis(format="%")),
+                        ).properties(height=240)
+                        st.altair_chart(chart, use_container_width=True)  # 1.50 altair_chart has no width=
+                        if image is not None:
+                            st.markdown(_forecast_strip(image, first), unsafe_allow_html=True)
+                    else:
+                        st.caption("No curve yet.")
                 with log:
                     st.markdown(f'<span class="card-tag">SESSION LOG ({len(st.session_state.scan_logs)})</span>',
                                 unsafe_allow_html=True)

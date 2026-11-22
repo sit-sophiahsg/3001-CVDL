@@ -2,31 +2,25 @@
 
 from __future__ import annotations
 
-import io
 from datetime import datetime
 from html import escape
-from pathlib import Path
 
 import streamlit as st
-from PIL import Image, ImageOps, UnidentifiedImageError
 
 import pipeline
 import views
 from backend import TYPES
-from components import BARCODE_SVG, bump_nonce, icon_svg, label_of, produce_svg
+from components import BARCODE_SVG, icon_svg, label_of, produce_svg
 
-SCREENS = ("welcome", "camera", "upload", "select", "result", "printed")
-WELCOME_PATH = Path(__file__).parent / "images" / "welcome.png"
+SCREENS = ("live", "result", "printed")
 
 BANNERS = {
-    "welcome": "Place your item on the scale, then take or upload a photo",
-    "camera": "Hold the item in view and take a photo",
-    "upload": "Choose a photo of your item",
+    "live": "Place your items on the scale",
     "select": "Select the item you are weighing",
     "printed": "Label printed. Thank you!",
 }
 PRICED_BANNER = "Please press PRINT"
-SPINNER_TEXT = "Finding items, grading freshness, checking blemishes…"
+SPINNER_TEXT = "Checking freshness…"
 TIER_BG = {"A": "#1F6F47", "B": "#9A5300", "C": "#B23A12", "D": "#8A1C0E"}
 STOP_DETAIL = {
     1: "Nothing here looks like one of our six types.",
@@ -53,16 +47,14 @@ def banner_for(screen: str, result: dict | None) -> tuple[str, str]:
         rule = result.get("rule_id")
         text = result.get("message") or FALLBACK_DETAIL
         return text, "stop" if rule == 5 else "warn"
-    return BANNERS.get(screen, BANNERS["welcome"]), ""
+    if screen == "live" and needs_type():
+        return BANNERS["select"], "ask"
+    return BANNERS.get(screen, BANNERS["live"]), ""
 
 
-@st.cache_resource(show_spinner=False)
-def _welcome_image() -> Image.Image | None:
-    if not WELCOME_PATH.exists():
-        return None
-    image = Image.open(WELCOME_PATH)
-    image.thumbnail((440, 440))
-    return image
+def needs_type() -> bool:
+    """A still frame is waiting and no type is selected yet."""
+    return st.session_state.get("image") is not None and not st.session_state.get("selected_type")
 
 
 # ---------------------------------------------------------------- callbacks
@@ -70,39 +62,32 @@ def go(screen: str) -> None:
     st.session_state.screen = screen
 
 
+def clear_frame() -> None:
+    """Forget the captured frame and its result (the scene changed, or a new scan is wanted)."""
+    st.session_state.update(screen="live", image=None, frame=None, source=None, result=None)
+
+
+def rearm() -> None:
+    """Tell the live view to scan again once the scene is still."""
+    st.session_state.rearm = st.session_state.get("rearm", 0) + 1
+
+
 def go_home() -> None:
-    """Home / Next item: clear image, selection and result."""
-    st.session_state.update(screen="welcome", image=None, selected_type=None, result=None,
-                            staff_called=False)
-    bump_nonce()
+    """Home / Next item: clear frame, selection and result; the live view re-arms."""
+    clear_frame()
+    st.session_state.update(selected_type=None, staff_called=False)
+    rearm()
 
 
 def scan_again() -> None:
-    """Keep selected_type and failed_scans; ask for a fresh photo."""
-    st.session_state.update(screen="welcome", image=None, result=None)
-    bump_nonce()
+    """Keep selected_type and failed_scans; scan again once the scene is still."""
+    clear_frame()
+    rearm()
 
 
-def use_demo(demo_image) -> None:
-    st.session_state.image = demo_image()
-    st.session_state.photo_error = None
-    st.session_state.screen = "select"
-
-
-def on_photo(widget_key: str) -> None:
-    """Camera / uploader on_change: store the photo only when a file actually arrived."""
-    file = st.session_state.get(widget_key)
-    if file is None:
-        return
-    try:
-        image = ImageOps.exif_transpose(Image.open(io.BytesIO(file.getvalue()))).convert("RGB")
-    except (UnidentifiedImageError, OSError):
-        st.session_state.photo_error = "That file is not a photo we can read. Please try another."
-        return
-    st.session_state.image = image
-    st.session_state.photo_error = None
-    st.session_state.screen = "select"
-    bump_nonce()
+def change_item() -> None:
+    """Back to the tiles; the frame is kept, so picking a type grades it straight away."""
+    st.session_state.update(screen="live", result=None, selected_type=None)
 
 
 def call_staff() -> None:
@@ -111,7 +96,8 @@ def call_staff() -> None:
 
 # ---------------------------------------------------------------- pieces
 def readouts(screen: str, result: dict | None, prices: dict[str, float]) -> None:
-    weight = 0.0 if screen in ("welcome", "camera", "upload") else float(st.session_state.weight_kg)
+    on_scale = st.session_state.get("image") is not None or screen in ("result", "printed")
+    weight = float(st.session_state.weight_kg) if on_scale else 0.0
     selected = st.session_state.selected_type
     unit = prices.get(selected, 0.0) if selected else 0.0
     total = result["price"]["total"] if screen in ("result", "printed") and is_priced(result) else 0.0
@@ -134,69 +120,41 @@ def footer() -> None:
         with left:
             st.button("Home", key="foot_home", on_click=go_home)
         with mid:
-            st.markdown('<div class="scale-foot-mid">Prices per kg</div>', unsafe_allow_html=True)
+            st.markdown('<div class="scale-foot-mid">Prices per kg · the scale checks automatically when '
+                        'items are still</div>', unsafe_allow_html=True)
         with right:
             with st.container(horizontal=True, horizontal_alignment="right"):
                 st.button("Staff called" if st.session_state.staff_called else "Call staff",
                           key="foot_staff", on_click=call_staff)
 
 
-# ---------------------------------------------------------------- screens
-def welcome(demo_image) -> None:
-    image = _welcome_image()
-    if image is not None:
-        with st.container(key="welcome_img"):
-            st.image(image, width="content")
-    with st.container(key="welcome_btns", horizontal=True):
-        st.button("Use camera", key="w_camera", on_click=go, args=("camera",), width="stretch")
-        st.button("Upload photo", key="w_upload", on_click=go, args=("upload",), width="stretch")
-        st.button("Demo photo", key="w_demo", on_click=use_demo, args=(demo_image,), width="stretch")
-
-
-def _photo_error() -> None:
-    if st.session_state.get("photo_error"):
-        st.error(st.session_state.photo_error)
-
-
-def camera() -> None:
-    key = f"cam_{st.session_state.input_nonce}"
-    st.camera_input("Take a photo", key=key, label_visibility="collapsed", on_change=on_photo, args=(key,))
-    st.markdown('<p class="small-note">Your browser will ask for camera permission. '
-                'The camera only works on localhost or https.</p>', unsafe_allow_html=True)
-    _photo_error()
-    with st.container(horizontal=True, horizontal_alignment="center"):
-        st.button("Back", key="cam_back", on_click=go, args=("welcome",))
-
-
-def upload() -> None:
-    key = f"up_{st.session_state.input_nonce}"
-    st.file_uploader("Choose a photo (PNG or JPG)", type=["png", "jpg", "jpeg"], key=key,
-                     on_change=on_photo, args=(key,))
-    _photo_error()
-    with st.container(horizontal=True, horizontal_alignment="center"):
-        st.button("Back", key="up_back", on_click=go, args=("welcome",))
-
-
-def select(scan, prices: dict[str, float]) -> None:
+# ---------------------------------------------------------------- side panel
+def tiles(scan, prices: dict[str, float]) -> None:
+    """Which item are you weighing? Picking grades the waiting frame, if there is one."""
+    st.markdown('<span class="side-head">Which item are you weighing?</span>', unsafe_allow_html=True)
     clicked = None
-    for row in (TYPES[:3], TYPES[3:]):
-        for column, produce in zip(st.columns(3), row):
+    asking = needs_type()
+    for row in (TYPES[0:2], TYPES[2:4], TYPES[4:6]):
+        for column, produce in zip(st.columns(2), row):
             price = prices.get(produce, 0.0)
             name = label_of(produce)
+            state = " on" if st.session_state.selected_type == produce else (" ask" if asking else "")
             with column, st.container(key=f"tile_{produce}"):
-                st.markdown(f'<div class="tile">{produce_svg(produce)}<span class="tile-name">{name}</span>'
-                            f'<span class="tile-price">{D}{price:.2f} / kg</span></div>',
+                st.markdown(f'<div class="tile{state}">{produce_svg(produce, 40)}<span class="tile-txt">'
+                            f'<span class="tile-name">{name}</span>'
+                            f'<span class="tile-price">{D}{price:.2f} / kg</span></span></div>',
                             unsafe_allow_html=True)
                 if st.button(f"{name}, ${price:.2f} per kg", key=f"pick_{produce}"):
                     clicked = produce
-    st.markdown('<p class="not-here">Your item isn\'t here? Only these six types are supported in this demo.</p>',
-                unsafe_allow_html=True)
+    st.markdown('<p class="not-here">Pick before or after placing; the scale checks as soon as the items '
+                'are still.</p>', unsafe_allow_html=True)
     if clicked:
         if st.session_state.selected_type != clicked:
             st.session_state.failed_scans = 0
         st.session_state.selected_type = clicked
-        with st.spinner(SPINNER_TEXT):
-            scan()
+        if st.session_state.image is not None:  # a still frame is waiting: grade it now
+            with st.spinner(SPINNER_TEXT):
+                scan()
         st.rerun()
 
 
@@ -240,8 +198,7 @@ def result_priced(result: dict) -> None:
         msg, colour = f"Full price · best within {days:g} days", "#1F6F47"
     name = label_of(st.session_state.selected_type or result.get("fields", {}).get("detected")).upper()
     with st.container(key="ticket"):
-        left, right = st.columns([1.5, 1], vertical_alignment="center")
-        with left:
+        with st.container(key="t_left"):
             st.markdown(
                 f'<div class="t-name">{escape(name)}</div><div class="t-row">'
                 f'<span class="pill" style="background:{TIER_BG.get(tier, "#1F6F47")}">Tier {tier} · {fresh:.0%} fresh</span>'
@@ -250,14 +207,14 @@ def result_priced(result: dict) -> None:
                 unsafe_allow_html=True)
             if st.button("Why this price?", key="why_toggle", type="tertiary"):
                 why_dialog(result)
-        with right:
+        with st.container(key="t_right"):
             strike = f'<span class="t-strike">{D}{weight * unit:.2f}</span>' if discount else ""
             st.markdown(f'<div class="t-right">{strike}<span class="t-total">{D}{total:.2f}</span>'
                         f'<span class="t-calc">{weight:.3f} kg × {D}{unit * (1 - discount):.2f}/kg</span></div>',
                         unsafe_allow_html=True)
     with st.container(key="ticket_actions", horizontal=True, horizontal_alignment="distribute",
                       vertical_alignment="center"):
-        st.button("Back", key="res_back", on_click=go, args=("select",))
+        st.button("Change item", key="res_back", on_click=change_item)
         st.button("PRINT", key="print_btn", on_click=go, args=("printed",))
 
 
@@ -271,7 +228,7 @@ def result_stopped(result: dict) -> None:
                 f'{icon_svg("alert", "#FFFFFF", 48)}</div><p class="stop-detail">{escape(detail)}</p>{pill}</div>',
                 unsafe_allow_html=True)
     with st.container(horizontal=True, horizontal_alignment="center"):
-        st.button("Change item", key="change_item", on_click=go, args=("select",))
+        st.button("Change item", key="change_item", on_click=change_item)
         st.button("Scan again", key="scan_again", on_click=scan_again)
 
 
@@ -301,33 +258,37 @@ def printed(result: dict) -> None:
 
 
 # ---------------------------------------------------------------- entry
-def render(scan, demo_image, prices: dict[str, float]) -> None:
+def render(scan, prices: dict[str, float], live_view) -> None:
+    """Readouts and prompt; the live view on the left and the side panel on the right."""
     screen = st.session_state.screen
     result = st.session_state.result
     # Screens that need data fall back safely instead of crashing.
     if screen in ("result", "printed") and not result:
-        screen = st.session_state.screen = "welcome"
+        screen = st.session_state.screen = "live"
     if screen == "printed" and not is_priced(result):
         screen = st.session_state.screen = "result"
-    if screen == "select" and st.session_state.image is None:
-        screen = st.session_state.screen = "welcome"
 
     with st.container(key="scale"):
         with st.container(key="screen"):
             readouts(screen, result, prices)
             banner(screen, result)
-            body = "stop" if screen == "result" and not is_priced(result) else screen
-            with st.container(key=f"body_{body}"):
-                if screen == "welcome":
-                    welcome(demo_image)
-                elif screen == "camera":
-                    camera()
-                elif screen == "upload":
-                    upload()
-                elif screen == "select":
-                    select(scan, prices)
+            with st.container(key="sbody"):
+                left, right = st.columns([1.65, 1], gap="medium")
+                with left, st.container(key="s_live"):
+                    live_view("shopper")
+                if screen == "printed":
+                    side = "printed"
                 elif screen == "result":
-                    result_priced(result) if is_priced(result) else result_stopped(result)
-                elif screen == "printed":
-                    printed(result)
+                    side = "priced" if is_priced(result) else "stop"
+                else:
+                    side = "tiles"
+                with right, st.container(key=f"side_{side}"):
+                    if side == "tiles":
+                        tiles(scan, prices)
+                    elif side == "priced":
+                        result_priced(result)
+                    elif side == "stop":
+                        result_stopped(result)
+                    else:
+                        printed(result)
             footer()

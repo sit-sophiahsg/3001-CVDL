@@ -1,23 +1,25 @@
 from __future__ import annotations
 
-import random
+import io
 import sys
+import time
 from datetime import datetime
 from pathlib import Path
 
 import streamlit as st
-from PIL import Image, ImageDraw, ImageOps
+from PIL import Image, ImageOps, UnidentifiedImageError
 
 APP_DIR = Path(__file__).parent
 if str(APP_DIR) not in sys.path:
     sys.path.insert(0, str(APP_DIR))
 
 import backend
+import live
 import mode1
 import mode2
 import models
 import pipeline
-from components import LOGO_SVG, load_prices, log_scan, reset_scan_state, style
+from components import LOGO_SVG, bump_nonce, load_prices, log_scan, reset_scan_state, style
 
 st.set_page_config(page_title="FreshMart Produce Scale", page_icon="🥬", layout="wide",
                    initial_sidebar_state="collapsed")
@@ -25,34 +27,23 @@ st.set_page_config(page_title="FreshMart Produce Scale", page_icon="🥬", layou
 PRICES = load_prices()
 TYPES = backend.TYPES
 VIEWS = ["Shopper", "Model view"]
-DEMO_DIR = APP_DIR / "demo"
 
 # Widget keys that must survive while their widget is not on screen (Model view
 # controls are not rendered in Shopper mode, and Streamlit drops unrendered widget state).
-PERSISTENT_WIDGET_KEYS = ("simulate_rule", "weight_kg", "ov_boxes", "ov_blemish", "ov_cam")
-
-
-def demo_image() -> Image.Image:
-    """A random photo from app/demo/*.jpg if there is one, otherwise the drawn demo image."""
-    photos = sorted(p for p in DEMO_DIR.glob("*") if p.suffix.lower() in (".jpg", ".jpeg")) if DEMO_DIR.is_dir() else []
-    if photos:
-        with Image.open(random.choice(photos)) as photo:
-            return ImageOps.exif_transpose(photo).convert("RGB")
-    image = Image.new("RGB", (900, 600), "#dff2e1")
-    draw = ImageDraw.Draw(image)
-    draw.rectangle((0, 410, 900, 600), fill="#a8cf8d")
-    for x, y, colour in ((180, 285, "#e94848"), (420, 270, "#f5bd32"), (660, 300, "#78b84a")):
-        draw.ellipse((x - 90, y - 90, x + 90, y + 90), fill=colour, outline="#fff", width=5)
-    draw.text((30, 30), "FreshMart demo produce", fill="#183b2b")
-    return image
+PERSISTENT_WIDGET_KEYS = ("simulate_rule", "weight_kg", "ov_boxes", "ov_fresh", "ov_blemish", "ov_cam")
+LIVE_KEY = "live"
 
 
 def init_state() -> None:
     defaults = {
-        "screen": "welcome",
+        "screen": "live",
         "selected_type": None,
         "weight_kg": 0.25,
-        "image": None,
+        "image": None,          # the frame being graded (camera auto-scan or the backup upload)
+        "frame": None,          # {ts, w, h, boxes}: the browser's boxes for that frame
+        "source": None,         # "camera" or "upload"
+        "live_last_ts": None,   # last component value handled
+        "rearm": 0,             # bumped to re-arm the live view ("Scan again", "Next item")
         "result": None,
         "failed_scans": 0,
         "scan_logs": [],
@@ -60,7 +51,8 @@ def init_state() -> None:
         "input_nonce": 0,
         "staff_called": False,
         "ov_boxes": True,
-        "ov_blemish": True,
+        "ov_fresh": True,
+        "ov_blemish": False,
         "ov_cam": False,
         "view": "Shopper",
         "_view_prev": "Shopper",
@@ -68,8 +60,8 @@ def init_state() -> None:
     }
     for key, value in defaults.items():
         st.session_state.setdefault(key, value)
-    if st.session_state.screen not in mode2.SCREENS:  # e.g. old "idle"/"weigh" screens
-        st.session_state.screen = "welcome"
+    if st.session_state.screen not in mode2.SCREENS:  # e.g. old "welcome"/"select" screens
+        st.session_state.screen = "live"
     for key in PERSISTENT_WIDGET_KEYS:
         st.session_state[key] = st.session_state[key]
 
@@ -83,25 +75,62 @@ def on_view_change() -> None:
         st.session_state._view_prev = st.session_state.view
 
 
-def set_view(view: str) -> None:
-    """For buttons that switch mode; only ever used as an on_click callback."""
-    st.session_state.view = view
-    st.session_state._view_prev = view
-
-
 def on_reset() -> None:
     reset_scan_state()
+    mode2.rearm()
+
+
+def take_frame(image: Image.Image, frame: dict, source: str) -> None:
+    """A new frame to grade: grade it now if a type is selected, else wait for the pick."""
+    st.session_state.update(image=image, frame=frame, source=source, result=None, screen="live")
+    if st.session_state.selected_type:
+        scan()
+
+
+def on_live() -> None:
+    """The live component sent something: a still frame, a scene change, or 'back to live'."""
+    value = st.session_state.get(LIVE_KEY)
+    if not isinstance(value, dict) or value.get("ts") is None or value.get("ts") == st.session_state.live_last_ts:
+        return
+    st.session_state.live_last_ts = value["ts"]
+    kind = value.get("kind")
+    if kind == "frame":
+        image = live.decode_frame(value)
+        if image is not None:
+            take_frame(image, live.frame_meta(value, image), "camera")
+    elif kind == "scene":
+        # items moved or were taken off: drop that frame and its grades (a printed label stays)
+        if st.session_state.source == "camera" and st.session_state.screen != "printed":
+            mode2.clear_frame()
+    elif kind == "live":  # leave the uploaded photo
+        mode2.clear_frame()
+        mode2.rearm()
+
+
+def on_upload(widget_key: str) -> None:
+    """Model view backup: an uploaded photo goes through the same path as an auto-scan."""
+    file = st.session_state.get(widget_key)
+    if file is None:
+        return
+    try:
+        image = ImageOps.exif_transpose(Image.open(io.BytesIO(file.getvalue()))).convert("RGB")
+    except (UnidentifiedImageError, OSError):
+        st.session_state.photo_error = "That file is not a photo we can read. Please try another."
+        return
+    st.session_state.photo_error = None
+    take_frame(image, {"ts": f"upload-{time.time_ns()}", "w": image.width, "h": image.height, "boxes": []}, "upload")
+    bump_nonce()
 
 
 # ---------------------------------------------------------------- scan
 def scan() -> bool:
     """Auto: the real models (pipeline.analyse_real). A forced rule: the stand-in backend.
 
-    Returns False if there is no photo, or if the models could not be loaded.
+    Returns False if there is no frame, or if the models could not be loaded.
     """
     image = st.session_state.image
-    if image is None:  # never fall back to the demo image silently (audit risk 2)
-        st.session_state.screen = "welcome"
+    if image is None:  # never grade anything but a captured frame or an upload
+        st.session_state.screen = "live"
         return False
     simulate = str(st.session_state.simulate_rule or "auto")
     args = (image, st.session_state.selected_type, float(st.session_state.weight_kg), st.session_state.failed_scans)
@@ -118,6 +147,7 @@ def scan() -> bool:
         result = pipeline.analyse_real(*args)
     else:
         result = backend.analyse(*args, simulate)
+    result["frame_ts"] = (st.session_state.frame or {}).get("ts")  # which frame these grades belong to
     st.session_state.result = result
     rule_id = result["rule_id"]
     # decide() counts failed scans (and raises the staff alert); the app only stores the count
@@ -142,8 +172,7 @@ def navbar() -> None:
             st.markdown(
                 f'<div class="brand">{LOGO_SVG}<div style="display:flex;flex-direction:column">'
                 '<span class="brand-name">FreshMart</span>'
-                '<span class="brand-sub">Smart produce scale · student demo</span>'
-                '<span class="brand-note">Student demo, not affiliated with any retailer.</span></div></div>',
+                '<span class="brand-sub">Smart produce scale</span></div></div>',
                 unsafe_allow_html=True,
             )
         with mid:
@@ -157,9 +186,21 @@ def navbar() -> None:
         with right:
             with st.container(key="nav_right", horizontal=True, horizontal_alignment="right",
                               vertical_alignment="center"):
-                st.markdown(f'<span class="nav-date">{datetime.now():%d/%m/%y}</span>',
-                            unsafe_allow_html=True)
                 st.button("Reset scan", key="nav_reset", on_click=on_reset)
+
+
+def live_view(view: str) -> None:
+    """The live camera component, with the last grades (camera) or the uploaded photo (backup)."""
+    s = st.session_state
+    model = view == "model"
+    blemish, occ = model and bool(s.ov_blemish), model and bool(s.ov_cam)
+    upload = s.source == "upload"
+    live.render(
+        view, key=LIVE_KEY, on_change=on_live, rearm=s.rearm,
+        grades=None if upload else live.grades_arg(s.result, s.frame, blemish, occ),
+        still=live.still_arg(s.image, s.result, blemish, occ) if upload else None,
+        show_boxes=bool(s.ov_boxes) if model else True, show_fresh=bool(s.ov_fresh) if model else True,
+        show_blemish=blemish, show_occ=occ, aspect=0.62 if model else 0.7, max_height=640 if model else 560)
 
 
 def main() -> None:
@@ -174,9 +215,9 @@ def main() -> None:
         if error:
             st.error(error)
         if view == "Model view":
-            mode1.render(set_view)
+            mode1.render(live_view, on_upload)
         else:
-            mode2.render(scan, demo_image, PRICES)
+            mode2.render(scan, PRICES, live_view)
 
 
 if __name__ == "__main__":
