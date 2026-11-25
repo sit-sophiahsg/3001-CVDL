@@ -12,6 +12,7 @@ html, body { margin: 0; padding: 0; background: transparent; font-family: Inter,
 #tl { position: absolute; left: 12px; top: 12px; display: flex; gap: 8px; align-items: center; }
 #live { display: flex; align-items: center; gap: 6px; font-weight: 700; }
 #live i { width: 9px; height: 9px; border-radius: 50%; background: #FF3B30; animation: pulse 1.2s infinite; }
+#stage[data-state="frozen"] #live i { background: #E0B33A; animation: none; }
 #ring { position: absolute; right: 12px; top: 10px; display: none; align-items: center; gap: 8px; padding: 4px 12px 4px 6px; }
 #ringtext { position: absolute; right: 12px; top: 12px; display: none; }
 #scanline { position: absolute; left: 0; right: 0; top: 0; height: 3px; background: #B9E26A; box-shadow: 0 0 14px #B9E26A;

@@ -125,10 +125,12 @@ def grade_display(session, batch: np.ndarray, rules: dict) -> list[dict]:
     Rejected for pricing (notebook 9.11). Called after the rule engine has decided, and nothing
     downstream (pricing.decide, rules, Shopper view) reads what it returns.
     """
-    fresh = session.run(["freshness"], {"image": batch})[0]
+    fresh, days = session.run(["freshness", "days_left"], {"image": batch})
+    fresh, days = np.asarray(fresh).reshape(-1), np.asarray(days).reshape(-1)
     tiers = models.scale_pricing.tier_idx(fresh, rules)
-    return [{"freshness_display": float(f), "tier_display": models.scale_pricing.TIERS[int(t)]}
-            for f, t in zip(fresh, np.atleast_1d(tiers))]
+    return [{"freshness_display": float(f), "tier_display": models.scale_pricing.TIERS[int(t)],
+             "days_display": round(float(d), 1)}
+            for f, t, d in zip(fresh, np.atleast_1d(tiers), days)]
 
 
 def blemish(session, crops: list[Image.Image], min_pct: float) -> list[dict]:
@@ -151,13 +153,49 @@ def blemish(session, crops: list[Image.Image], min_pct: float) -> list[dict]:
     return out
 
 
+# ---------------------------------------------------------------- type from the detector (Model view)
+def detector_type(found: list[dict], classes: list[str], tau_det: float | None = None) -> dict | None:
+    """The scan type in Model view: the class with the largest total box area among the detections
+    with confidence >= tau_det; only if none reach tau_det, among those >= DET_CONF (0.25).
+
+    Picking among the confident detections first means decide's rule 4 cannot fire (a second
+    confident type is rule 3). Ties -> higher mean confidence.
+    {type, conf (that class's top confidence)}, or None if nothing found.
+    """
+    if tau_det is not None:
+        sure = detector_type([d for d in found if d["conf"] >= tau_det], classes)
+        if sure is not None:
+            return sure
+    groups: dict[str, dict] = {}
+    for d in found:
+        if d["conf"] < DET_CONF:
+            continue
+        g = groups.setdefault(classes[d["cls"]], {"area": 0.0, "confs": []})
+        x0, y0, x1, y1 = d["box"]
+        g["area"] += max(0.0, float(x1 - x0)) * max(0.0, float(y1 - y0))
+        g["confs"].append(float(d["conf"]))
+    if not groups:
+        return None
+    best = max(groups, key=lambda c: (groups[c]["area"], float(np.mean(groups[c]["confs"]))))
+    return {"type": best, "conf": max(groups[best]["confs"])}
+
+
+def type_from_image(image: Image.Image) -> dict | None:
+    """Detector only: the scan type for a frame (Model view's simulated outcomes)."""
+    bundle = models.load_models()
+    return detector_type(detect(bundle.sessions["detector"], np.asarray(image.convert("RGB"))),
+                         bundle.config.classes, float(bundle.config.rules["thresholds"]["tau_det"]))
+
+
 # ---------------------------------------------------------------- full scan
-def analyse_real(image: Image.Image, selected_type: str, weight_kg: float, failed_scans: int,
+def analyse_real(image: Image.Image, selected_type: str | None, weight_kg: float, failed_scans: int,
                  display: bool = False) -> dict[str, Any]:
     """Detector -> crops -> freshness -> rule engine -> blemish. Same dict shape as backend.analyse.
 
     ``display`` (Model view with "Camera-tuned %" on) also runs the display-only model after the
     decision; otherwise it is skipped entirely (Shopper scans never run it).
+    ``selected_type=None`` (Model view): the type comes from the detector (``detector_type``) and is
+    passed to decide as the selected type, so the price per kg and the per-type confidence use it.
     """
     bundle = models.load_models()
     cfg, sess = bundle.config, bundle.sessions
@@ -166,6 +204,10 @@ def analyse_real(image: Image.Image, selected_type: str, weight_kg: float, faile
     t_all = time.perf_counter()
 
     found = detect(sess["detector"], rgb)
+    type_info = None
+    if selected_type is None:  # Model view: no shopper pick, the detector decides the type
+        type_info = detector_type(found, cfg.classes, float(cfg.rules["thresholds"]["tau_det"]))
+        selected_type = type_info["type"] if type_info else None
     crops_xy = [crop_box(d["box"], image.size) for d in found]
     crops = [image.crop(tuple(c)) for c in crops_xy]
 
@@ -231,6 +273,8 @@ def analyse_real(image: Image.Image, selected_type: str, weight_kg: float, faile
         "thresholds": dict(cfg.rules["thresholds"]),
         "items": items,
         "simulated": False,
+        "selected_type": selected_type,      # the scan's type: the shopper's pick, or the detector's (Model view)
+        "type_from_detector": type_info,     # {type, conf} in Model view, else None
     }
 
 

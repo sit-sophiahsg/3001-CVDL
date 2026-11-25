@@ -280,8 +280,10 @@
     if (args.still) {
       still = args.still;
       if (still.src !== stillSrc) { stillSrc = still.src; stillImg = image(still.src); }
+      if (still.frozen) checking = false;   // the capture is graded: it comes back as this frozen still
     } else { still = null; stillImg = null; stillSrc = null; }
-    $("back").style.display = still ? "block" : "none";
+    // a frozen Model view capture is left only with "Reset scan" (no "Back to live camera")
+    $("back").style.display = still && !still.frozen ? "block" : "none";
     resize();
   }
 
@@ -293,7 +295,13 @@
   // ------------------------------------------------------------ drawing
   function resize() {
     const w = stage.clientWidth || document.body.clientWidth || 640;
-    const h = Math.max(300, Math.min(args.max_height || 620, Math.round(w * (args.aspect || 0.62))));
+    let h = Math.max(300, Math.min(args.max_height || 620, Math.round(w * (args.aspect || 0.62))));
+    if (args.view !== "model") {           // Shopper: never taller than its column (the page has no scrollbars)
+      try {
+        const col = window.frameElement && window.frameElement.closest('[data-testid="stColumn"]');
+        if (col && col.clientHeight > 0) h = Math.max(200, Math.min(h, col.clientHeight - 2));
+      } catch (e) { /* not same-origin: keep the computed height */ }
+    }
     stage.style.height = h + "px";
     stage.style.setProperty("--h", h + "px");
     const dpr = window.devicePixelRatio || 1;
@@ -303,6 +311,7 @@
     setHeight(h);
   }
   window.addEventListener("resize", resize);
+  try { window.parent.addEventListener("resize", resize); } catch (e) { /* not same-origin */ }
 
   // grade for a live box: the captured box it matches, then the server item matched to that box
   function gradeFor(liveBoxes) {
@@ -325,7 +334,7 @@
     const sw = still ? still.w : video.videoWidth, sh = still ? still.h : video.videoHeight;
     let msg = null;
     if (still && !(stillImg && stillImg.complete)) msg = "Loading the photo…";
-    else if (!still && camError) msg = camError + " Use “Upload photo (backup)” in Model view (Developer box) instead.";
+    else if (!still && camError) msg = camError + " Check the camera permission, then reload the page.";
     else if (!still && !videoReady()) msg = "Starting the camera…";
     else if (!still && modelError) msg = modelError;
     else if (!still && !session) msg = "Loading the live detector…";
@@ -365,20 +374,35 @@
       const showDisp = model && !!args.show_disp;        // camera-tuned %, display only, Model view only
       const font = 13 * dpr, lh = 20 * dpr;
       ctx.font = "700 " + font + "px Inter, system-ui, sans-serif";
+      // the top-left badges ("LIVE · boxes every frame", item count), in canvas pixels, with a small margin
+      const badge = (() => {
+        const el = $("tl"), sr = stage.getBoundingClientRect(), br = el ? el.getBoundingClientRect() : null;
+        if (!br || !br.width) return null;
+        const sx = W / (sr.width || W), sy = H / (sr.height || H), m = 4;
+        return [(br.left - sr.left - m) * sx, (br.top - sr.top - m) * sy, (br.right - sr.left + m) * sx, (br.bottom - sr.top + m) * sy];
+      })();
+      const hits = (a, b) => !!b && a[0] < b[2] && a[2] > b[0] && a[1] < b[3] && a[3] > b[1];
       shown.forEach((b, i) => {
         const g = graded[i];
         const tier = g && g.tier;
         const known = !!(g && g.freshness !== null && g.freshness !== undefined);
         const r = T(b.box);
-        const colour = known && showFresh ? (TIER[tier] || BOX_BLUE) : BOX_BLUE;
+        // Shopper: one label, e.g. "Orange · 82% · A". Camera-tuned values when Python sends them;
+        // on a real rule-7 price it sends none, so the label uses ResNet-50 and matches the ticket.
+        const hasDisp = !!(g && g.fresh_disp !== null && g.fresh_disp !== undefined);
+        const camShop = !model && (hasDisp || known);
+        const shopF = hasDisp ? g.fresh_disp : known ? g.freshness : null, shopT = hasDisp ? g.tier_disp : tier;
+        const colour = camShop ? (TIER[shopT] || BOX_BLUE) : known && showFresh ? (TIER[tier] || BOX_BLUE) : BOX_BLUE;
         if (showLabels || !model) {
           ctx.lineWidth = 3.5 * dpr; ctx.strokeStyle = colour;
           ctx.beginPath(); if (ctx.roundRect) ctx.roundRect(r[0], r[1], r[2] - r[0], r[3] - r[1], 4 * dpr); else ctx.rect(r[0], r[1], r[2] - r[0], r[3] - r[1]); ctx.stroke();
         }
         const lines = [];
         const type = b.produce || classes[b.cls] || "item";
-        if (showLabels) lines.push([(model ? "#" + (i + 1) + " " : "") + cap(type) + (model ? " " + Number(b.conf).toFixed(2) : ""), TYPE_BG, 700]);
-        if (showFresh) {
+        if (camShop) {
+          lines.push([cap(type) + " · " + Math.round(shopF * 100) + "% · " + (shopT || "?"), TIER[shopT] || TYPE_BG, 700]);
+        } else if (showLabels) lines.push([(model ? "#" + (i + 1) + " " : "") + cap(type) + (model ? " " + Number(b.conf).toFixed(2) : ""), TYPE_BG, 700]);
+        if (showFresh && !camShop) {
           if (known) lines.push([Math.round(g.freshness * 100) + "% fresh" + (model && tier ? " · " + tier : ""), TIER[tier] || GREY, 600]);
           else if (checking) lines.push(["grading…", GREY, 600]);
         }
@@ -387,7 +411,17 @@
                       TIER[g.tier_disp] || GREY, 500, "disp"]);
         }
         if (!lines.length) return;
-        let cy = r[1] - lines.length * lh; if (cy < 4 * dpr) cy = r[1] + 4 * dpr;
+        const wmax = Math.max(...lines.map((l) => {
+          ctx.font = (l[3] === "disp" ? "italic " : "") + l[2] + " " + font + "px Inter, system-ui, sans-serif";
+          return ctx.measureText(l[0]).width + 14 * dpr;
+        }));
+        const blockAt = (y) => [r[0], y, r[0] + wmax, y + lines.length * lh];
+        let cy = r[1] - lines.length * lh;
+        // off the top, or under the badges: draw inside the top of the box (below the badges if they cover it)
+        if (cy < 4 * dpr || hits(blockAt(cy), badge)) {
+          cy = r[1] + 4 * dpr;
+          if (hits(blockAt(cy), badge)) cy = badge[3] + 2 * dpr;
+        }
         lines.forEach((l, j) => {
           const disp = l[3] === "disp";
           ctx.font = (disp ? "italic " : "") + l[2] + " " + font + "px Inter, system-ui, sans-serif";
@@ -410,7 +444,7 @@
 
     const n = shown.length;
     $("count").textContent = n ? n + (n === 1 ? " item" : " items") + " detected" : "no items";
-    $("livetext").textContent = still ? "UPLOADED PHOTO" : model ? "LIVE · boxes every frame · " + stats.fps.toFixed(1) + " fps" : "LIVE";
+    $("livetext").textContent = still ? (still.frozen ? "Captured · press Reset scan for a new scan" : "UPLOADED PHOTO") : model ? "LIVE · boxes every frame · " + stats.fps.toFixed(1) + " fps" : "LIVE";
     const progress = !still && armed && stillSince !== null ? Math.min(1, (performance.now() - stillSince) / STILL_MS) : null;
     $("ring").style.display = progress !== null && !model ? "flex" : "none";
     $("ringtext").style.display = progress !== null && model ? "block" : "none";
@@ -419,7 +453,7 @@
       $("ringtext").textContent = "Scene still · auto-scan in " + ((1 - progress) * STILL_MS / 1000).toFixed(1) + " s";
     }
     $("scanline").style.display = checking || args.checking ? "block" : "none";
-    stage.dataset.state = still ? "still" : checking ? "checking" : capBoxes ? (grades && grades.items && grades.items.length ? "graded" : "captured") : progress !== null ? "holding" : "live";
+    stage.dataset.state = still ? (still.frozen ? "frozen" : "still") : checking ? "checking" : capBoxes ? (grades && grades.items && grades.items.length ? "graded" : "captured") : progress !== null ? "holding" : "live";
   }
 
   send("streamlit:componentReady", { apiVersion: 1 });

@@ -10,6 +10,7 @@ from urllib.parse import quote
 import streamlit as st
 
 ROOT = Path(__file__).parent.parent
+WEIGHT_KG = 0.25  # fixed net weight (kg) for every scan: there is no real load cell
 
 LABELS = {"apple": "Apple", "banana": "Banana", "orange": "Orange", "capsicum": "Capsicum",
           "tomato": "Tomato", "potato": "Potato"}
@@ -130,7 +131,22 @@ CSS = """
 .st-key-scale_foot { background:#D7E6E2; padding:clamp(6px, 1vh, 10px) 18px; box-sizing:border-box; }
 .scale-foot-mid { font-size:13px; color:#3D5A4B; text-align:center; }
 
-.readouts { display:grid; grid-template-columns:repeat(4, minmax(0,1fr)); gap:6px; padding:clamp(6px, 1vh, 10px); background:#D7E6E2; }
+.readouts { display:grid; grid-template-columns:repeat(3, minmax(0,1fr)); gap:6px; padding:clamp(6px, 1vh, 10px); background:#D7E6E2; }
+.readout .rl { display:flex; align-items:center; gap:6px; flex-wrap:wrap; }
+.demo-tag { background:#E0B33A; color:#3B2F00; border-radius:4px; padding:0 6px; font-size:11px; font-weight:800; letter-spacing:.6px; }
+.readout .rv.nfs { font-size:clamp(18px, 3vh, 26px); line-height:1.6; }
+.stApp .demo-grey, .stApp p.demo-grey { margin:2px 0 0 !important; font-size:clamp(10.5px, 1.5vh, 12px) !important; line-height:1.35 !important; color:#6B7A73 !important; }
+/* both models' bag freshness: camera-tuned prominent, the actual model (ResNet-50) muted */
+.fr-card { display:flex; flex-direction:column; gap:6px; }
+.fr-main { background:#FFF4D6; border:2px solid #E0B33A; border-radius:12px; padding:6px 12px; display:flex; flex-direction:column; gap:2px; }
+.fr-big { font-family:'Space Grotesk', Inter, sans-serif; font-size:clamp(20px, 3.2vh, 28px); font-weight:700; color:#10261B;
+  display:flex; align-items:center; gap:10px; flex-wrap:wrap; line-height:1.2; }
+.fr-big .pill { font-size:14px; }
+.fr-sub { background:#F3F5F4; border-radius:10px; padding:clamp(2px, .5vh, 5px) 10px; display:flex; flex-direction:column; gap:1px; color:#5A6E64; }
+.fr-h { font-size:12px; font-weight:700; color:#5A6E64; letter-spacing:.3px; display:flex; gap:6px; align-items:center; flex-wrap:wrap; }
+.fr-v { font-size:13px; color:#3D5A4B; }
+.fr-tag { background:#E2E7E4; color:#3D5A4B; border-radius:4px; padding:0 6px; font-size:11px; font-weight:700; letter-spacing:.3px; }
+.fr-tag.hl { background:#E0B33A; color:#3B2F00; }
 .readout { background:#FFFFFF; border-radius:8px; overflow:hidden; display:flex; flex-direction:column; }
 .readout .rl { background:#2C6B4D; color:#FFFFFF; font-size:12px; font-weight:600; letter-spacing:.6px; padding:4px 10px; }
 .readout .rv { font-family:'Share Tech Mono', monospace; font-size:clamp(26px, 4.6vh, 38px); text-align:right; padding:2px 12px;
@@ -147,7 +163,12 @@ CSS = """
 /* live view + side panel */
 .st-key-sbody { padding:18px 14px 12px; box-sizing:border-box; }
 .st-key-sbody [data-testid="stHorizontalBlock"] { gap:14px; }
-[class*="st-key-side_"] { gap:8px !important; }
+[class*="st-key-side_"] { gap:clamp(4px, .8vh, 8px) !important; }
+[class*="st-key-side_"] > * { flex-shrink:0 !important; }  /* never squeeze a card: it would overlap the next */
+/* Streamlit pulls every markdown block up by 1rem (for a trailing paragraph margin); our HTML cards have none,
+   so without this each card would overlap the next one by 16px */
+[class*="st-key-side_"] [data-testid="stMarkdownContainer"], .st-key-mv_right [data-testid="stMarkdownContainer"] {
+  margin-bottom:0 !important; }
 .st-key-side_stop, .st-key-side_printed { justify-content:flex-start; }
 .side-head { font-size:14px; font-weight:700; color:#3D5A4B; }
 .st-key-sbody iframe, .st-key-mv_left iframe { display:block; border:none; }
@@ -157,21 +178,24 @@ CSS = """
 
 /* shared big buttons */
 .st-key-res_back button, .st-key-change_item button, .st-key-scan_again button, .st-key-next_item button {
-  min-height:clamp(44px, 6.5vh, 56px); border-radius:14px !important; padding:0 24px !important; font-size:17px !important;
+  min-height:clamp(38px, 5.5vh, 56px); border-radius:14px !important; padding:0 22px !important; font-size:clamp(15px, 2.1vh, 17px) !important;
   font-weight:600 !important; }
 
 /* produce tiles: the whole card is the button */
 [class*="st-key-tile_"] { position:relative; background:#FFFFFF; border:2px solid #C9DAD3; box-shadow:0 2px 0 #C9DAD3;
-  border-radius:12px; min-height:58px; padding:8px 10px; box-sizing:border-box; justify-content:center; gap:0 !important; }
+  border-radius:12px; min-height:clamp(64px, 9.4vh, 96px); padding:clamp(3px, .6vh, 8px) 8px; box-sizing:border-box;
+  justify-content:center; gap:0 !important; }
+[class*="st-key-tile_"] [data-testid="stElementContainer"]:has(.tile) { margin:0 !important; }
+[class*="st-key-tile_"] [data-testid="stMarkdownContainer"] { margin:0 !important; }
 [class*="st-key-tile_"]:has(.tile.on) { background:#E3F1E8; border-color:#1F6F47; }
 [class*="st-key-tile_"]:has(.tile.ask) { border-color:#E0B33A; }
 [class*="st-key-tile_"]:hover { border-color:#1F6F47; }
 [class*="st-key-tile_"]:has(button:focus-visible) { outline:3px solid #2B7FD6; outline-offset:2px; }
-.tile { display:flex; flex-direction:row; align-items:center; gap:10px; text-align:left; }
-.tile svg { width:38px; height:38px; flex:none; }
-.tile-txt { display:flex; flex-direction:column; }
-.tile-name { font-size:15px; font-weight:700; color:#10261B; }
-.tile-price { font-size:13px; color:#3D5A4B; }
+.tile { display:flex; flex-direction:column; align-items:center; justify-content:center; gap:clamp(1px, .3vh, 4px); text-align:center; }
+.tile svg { width:clamp(22px, 3.4vh, 38px); height:clamp(22px, 3.4vh, 38px); flex:none; }
+.tile-txt { display:flex; flex-direction:column; align-items:center; }
+.tile-name { font-size:clamp(13px, 1.9vh, 15px); line-height:1.15; font-weight:700; color:#10261B; }
+.tile-price { font-size:clamp(11px, 1.6vh, 13px); line-height:1.15; color:#3D5A4B; }
 [class*="st-key-pick_"] { position:absolute !important; inset:0; z-index:2; width:auto !important; margin:0 !important; }
 [class*="st-key-pick_"] div { width:100% !important; height:100% !important; }
 [class*="st-key-pick_"] button { width:100% !important; height:100% !important; background:transparent !important; border:none !important;
@@ -180,22 +204,23 @@ CSS = """
 
 /* priced ticket */
 .st-key-ticket { position:relative; background:#FFFFFF; border-radius:14px 14px 0 0; gap:6px !important;
-  padding:16px 18px 24px; box-sizing:border-box; }
-.st-key-t_right { border-top:1px dashed #9DB8AD; padding-top:8px; }
+  padding:clamp(6px, 1.2vh, 16px) 16px clamp(12px, 2vh, 24px); box-sizing:border-box; }
+.st-key-ticket { gap:clamp(0px, .5vh, 6px) !important; }
+.st-key-t_right { border-top:1px dashed #9DB8AD; padding-top:clamp(4px, .8vh, 8px); }
 .st-key-ticket::after { content:""; position:absolute; left:0; right:0; bottom:0; height:10px;
   background:linear-gradient(45deg, #EAF3F1 50%, transparent 50%) 0 0 / 20px 20px repeat-x,
              linear-gradient(-45deg, #EAF3F1 50%, transparent 50%) 0 0 / 20px 20px repeat-x; }
-.t-name { font-family:'Space Grotesk', Inter, sans-serif; font-size:clamp(22px, 3.6vh, 30px); font-weight:700; letter-spacing:.4px; line-height:1.2; }
-.t-row { display:flex; flex-wrap:wrap; gap:10px; align-items:center; margin:clamp(4px, 1vh, 10px) 0; }
-.pill { border-radius:999px; padding:6px 14px; font-size:15px; font-weight:700; color:#FFFFFF; }
-.t-count { font-size:16px; color:#3D5A4B; }
-.t-msg { font-size:16px; font-weight:600; }
+.t-name { font-family:'Space Grotesk', Inter, sans-serif; font-size:clamp(18px, 2.8vh, 30px); font-weight:700; letter-spacing:.4px; line-height:1.2; }
+.t-row { display:flex; flex-wrap:wrap; gap:6px 10px; align-items:center; margin:clamp(2px, .6vh, 10px) 0; }
+.pill { border-radius:999px; padding:clamp(3px, .5vh, 6px) 12px; font-size:clamp(13px, 1.9vh, 15px); font-weight:700; color:#FFFFFF; }
+.t-count { font-size:clamp(13px, 1.9vh, 16px); color:#3D5A4B; }
+.t-msg { font-size:clamp(13px, 1.9vh, 16px); font-weight:600; }
 .t-right { display:flex; flex-direction:column; align-items:flex-end; gap:4px; }
 .t-strike { font-size:16px; color:#6B7F75; text-decoration:line-through; }
-.t-total { font-family:'Share Tech Mono', monospace; font-size:clamp(36px, 6vh, 52px); line-height:1.1; }
+.t-total { font-family:'Share Tech Mono', monospace; font-size:clamp(26px, 4.2vh, 52px); line-height:1.05; }
 .t-calc { font-size:14px; color:#3D5A4B; }
-.st-key-why_toggle button { color:#1F6F47 !important; text-decoration:underline; font-size:16px !important; font-weight:600 !important;
-  padding:8px 0 !important; min-height:44px; }
+.st-key-why_toggle button { color:#1F6F47 !important; text-decoration:underline; font-size:clamp(13px, 1.9vh, 16px) !important; font-weight:600 !important;
+  padding:2px 0 !important; min-height:clamp(26px, 4vh, 44px); }
 .why-grid { display:grid; grid-template-columns:repeat(auto-fit, minmax(240px, 1fr)); gap:14px; margin-top:6px; }
 .why-card { background:#FFFFFF; border-radius:12px; padding:14px; display:flex; flex-direction:column; gap:8px; }
 .why-title { font-size:14px; font-weight:700; color:#3D5A4B; }
@@ -204,18 +229,20 @@ CSS = """
 .fc { display:flex; flex-direction:column; align-items:center; gap:4px; font-size:12px; color:#3D5A4B; }
 .fc img { width:100% !important; aspect-ratio:1; object-fit:cover; border-radius:8px; }
 .illus { font-size:12px; color:#5A6E64; }
-.st-key-print_btn button { width:104px; height:104px; border-radius:50% !important; border:none !important; background:#F2C94C !important;
-  color:#3B2F00 !important; font-family:'Space Grotesk', Inter, sans-serif !important; font-size:24px !important; font-weight:700 !important;
+.st-key-print_btn button { width:clamp(54px, 8vh, 104px); height:clamp(54px, 8vh, 104px); border-radius:50% !important; border:none !important; background:#F2C94C !important;
+  color:#3B2F00 !important; font-family:'Space Grotesk', Inter, sans-serif !important; font-size:clamp(16px, 2.4vh, 24px) !important; font-weight:700 !important;
   box-shadow:0 6px 0 #C9A12C; }
+.st-key-print_btn button { padding:0 !important; white-space:nowrap; font-size:clamp(14px, 2vh, 24px) !important; }
+.st-key-print_btn button p { font-size:inherit !important; white-space:nowrap; }
 .st-key-print_btn button:active { transform:translateY(4px); box-shadow:0 2px 0 #C9A12C; }
 
 /* not priced */
-.stop-box { display:flex; flex-direction:column; align-items:flex-start; gap:12px; background:#FFFFFF; border-radius:14px; padding:18px; }
-.stop-icon { width:56px; height:56px; border-radius:50%; display:flex; align-items:center; justify-content:center; }
-.stop-icon svg { width:30px; height:30px; }
-.stop-detail { margin:0; font-size:17px; }
+.stop-box { display:flex; flex-direction:column; align-items:flex-start; gap:clamp(4px, 1.1vh, 12px); background:#FFFFFF; border-radius:14px; padding:clamp(10px, 1.8vh, 18px); }
+.stop-icon { width:clamp(34px, 5.6vh, 56px); height:clamp(34px, 5.6vh, 56px); border-radius:50%; display:flex; align-items:center; justify-content:center; }
+.stop-icon svg { width:60%; height:60%; }
+.stop-detail { margin:0; font-size:clamp(14px, 2vh, 17px); }
 .stop-box { padding-bottom:clamp(8px, 1.8vh, 18px); }
-.staff-pill { background:#FFE9E4; color:#8A1C0E; border-radius:999px; padding:10px 18px; font-size:16px; font-weight:600; }
+.staff-pill { background:#FFE9E4; color:#8A1C0E; border-radius:999px; padding:clamp(4px, .9vh, 10px) 14px; font-size:clamp(13px, 1.9vh, 16px); font-weight:600; }
 
 /* printed label */
 .label-card { width:270px; margin:0 auto; background:#FFFFFF; border-radius:10px; box-shadow:0 10px 24px rgba(16,38,27,.18);
@@ -238,9 +265,17 @@ CSS = """
 .st-key-modelpage { width:100%; max-width:1360px; margin:0 auto; gap:16px; }
 .stApp h1.mv-title { margin:0; padding:0; font-family:'Space Grotesk', Inter, sans-serif; font-size:28px !important; font-weight:700; line-height:1.25; }
 .mv-photo { display:block; width:100% !important; max-width:none !important; border-radius:12px; background:#DFF2E1; }
-.st-key-mv_left [data-testid="stCheckbox"] label:has(input[aria-checked="true"]) > div:first-child { background:#1F6F47 !important; }
-.st-key-mv_left [data-testid="stCheckbox"] p { font-size:13px !important; font-weight:600; }
-.st-key-mv_toggles { gap:4px 14px !important; flex-wrap:wrap; }
+.st-key-mv_toggles [data-testid="stCheckbox"] label:has(input[aria-checked="true"]) > div:first-child { background:#1F6F47 !important; }
+.st-key-mv_toggles [data-testid="stCheckbox"] p { font-size:13px !important; font-weight:600; }
+.st-key-mv_toggles { gap:4px 14px !important; flex-wrap:wrap; flex-shrink:0; padding:10px 0 8px; border-bottom:1px solid #EEF1EF; }
+.demo-card { background:#FFF4D6 !important; border:2px solid #E0B33A !important; border-radius:12px !important;
+  padding:14px 16px !important; margin:10px 0 12px !important; }
+.demo-card .demo-price { font-family:'Space Grotesk', Inter, sans-serif; font-size:40px; line-height:1.1; font-weight:700; color:#10261B;
+  display:flex; align-items:baseline; gap:12px; flex-wrap:wrap; }
+.demo-card .demo-tier { font-size:20px; background:#1F6F47; color:#FFFFFF; border-radius:999px; padding:2px 12px; }
+.st-key-mv_right .card.real-muted { opacity:.78; gap:6px; }
+.real-muted .dec-rule-sm { font-family:'Space Grotesk', Inter, sans-serif; font-size:15px; font-weight:700; color:#3D5A4B; }
+.real-muted .chip { font-size:12px; }
 .st-key-mv_toggles p { font-size:13px !important; font-weight:600; }
 .mv-sub { font-size:14px; color:#3D5A4B; }
 .st-key-devbox { background:#FFFFFF; border:1px solid #C9DAD3; border-radius:14px; padding:12px 14px; box-sizing:border-box; }
@@ -269,11 +304,7 @@ CSS = """
 .st-key-mv_top [data-testid="stElementContainer"]:has(.mv-head) { flex:0 0 auto; width:auto !important; }
 .st-key-mv_top [data-testid="stLayoutWrapper"]:has(> .st-key-devbox) { flex:0 0 auto; width:auto !important; }
 .st-key-devbox { flex-wrap:wrap !important; width:auto !important; padding:8px 12px !important; gap:12px !important; }
-.st-key-devbox [class*="st-key-up_"] { width:250px !important; flex:0 0 250px; }
-.st-key-devbox [data-testid="stFileUploaderDropzone"] { padding:4px 8px; min-height:40px; }
-.st-key-devbox [data-testid="stFileUploaderDropzoneInstructions"] { display:none; }
 .st-key-devbox .st-key-simulate_rule { width:240px !important; flex:0 0 240px; }
-.st-key-devbox .st-key-weight_kg { width:170px !important; flex:0 0 170px; }
 .st-key-devbox [data-testid="stWidgetLabel"] p { white-space:nowrap; }
 .st-key-devbox [data-testid="stElementContainer"]:has(.dev-tag) { width:auto !important; flex:0 0 auto; align-self:center; }
 .standin { padding:8px 12px; font-size:13px; }
@@ -305,7 +336,7 @@ CSS = """
   .st-key-sbody { flex:1 1 0 !important; min-height:0 !important; flex-wrap:nowrap; }
   .st-key-sbody > [data-testid="stLayoutWrapper"] { flex:1 1 0 !important; min-height:0 !important; }
   .st-key-sbody [data-testid="stHorizontalBlock"] { height:100%; flex-wrap:nowrap; }
-  .st-key-sbody [data-testid="stColumn"] { min-height:0; height:100%; overflow-y:auto; overflow-x:hidden; }
+  .st-key-sbody [data-testid="stColumn"] { min-height:0; height:100%; overflow:hidden; }  /* never a scrollbar */
   .st-key-mv_cols > [data-testid="stLayoutWrapper"]:has(> [data-testid="stHorizontalBlock"]) {
     flex:1 1 0 !important; min-height:0 !important; display:flex; flex-direction:column; }
   .st-key-mv_cols > [data-testid="stLayoutWrapper"] > [data-testid="stHorizontalBlock"] { flex:1 1 0; min-height:0; height:100%;
@@ -315,6 +346,7 @@ CSS = """
   .st-key-mv_left > * { flex-shrink:0; }
   .st-key-mv_left [data-testid="stElementContainer"]:has(.mv-photo-box) { flex:1 1 0; min-height:0; flex-shrink:1; }
   .st-key-mv_left [data-testid="stElementContainer"]:has(.mv-photo-box) div { height:100%; }
+  .st-key-mv_right [data-testid="stLayoutWrapper"]:has(> .st-key-mv_toggles) { flex:0 0 auto !important; }
   .st-key-mv_right [data-testid="stElementContainer"]:has([data-testid="stTabs"]),
   .st-key-mv_right [data-testid="stLayoutWrapper"]:has([data-testid="stTabs"]) { flex:1 1 0; min-height:0; display:flex; flex-direction:column; }
   .st-key-mv_right [data-testid="stTabs"] { flex:1 1 0; min-height:0; height:100%; display:flex; flex-direction:column; }
@@ -376,15 +408,10 @@ def log_scan(entry: dict) -> None:
             continue
 
 
-def bump_nonce() -> None:
-    """New widget key for the backup uploader, so it comes back empty."""
-    st.session_state.input_nonce = st.session_state.get("input_nonce", 0) + 1
-
-
 def reset_scan_state() -> None:
     """Reset scan: same keys as before, plus the staff-called flag."""
-    for key, value in {"screen": "live", "selected_type": None, "weight_kg": 0.25,
-                       "image": None, "frame": None, "source": None, "result": None, "failed_scans": 0,
+    for key, value in {"screen": "live", "selected_type": None,
+                       "image": None, "frame": None, "source": None, "result": None, "failed_scans": 0, "failed_scans_model": 0,
+                       "mv_image": None, "mv_frame": None, "mv_result": None,
                        "scan_logs": [], "staff_called": False}.items():
         st.session_state[key] = value
-    bump_nonce()

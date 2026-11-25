@@ -12,7 +12,8 @@ import models
 import pipeline
 import views
 from components import label_of
-from mode2 import banner_for, is_priced
+from mode2 import (FALLBACK_DETAIL, PRICED_BANNER, RULE_NAMES, TIER_BG, demo_note, demo_price, demo_rule,
+                   fresh_card, is_priced)
 
 SIM_OPTIONS = {
     "auto": "Auto (models decide)",
@@ -24,29 +25,27 @@ SIM_OPTIONS = {
     "6": "Rule 6 · unsellable but unsure",
     "7": "Rule 7 · priced",
 }
-RULE_NAMES = {
-    1: "Not produce, or nothing found",
-    2: "Freshness confidence below τ_conf",
-    3: "Two or more types",
-    4: "Another type than selected",
-    5: "Unsellable with confidence ≥ τ_rotten",
-    6: "Unsellable but unsure",
-    7: "Price from bag freshness",
-}
 D = "&#36;"
 
 
-def _top_row(on_upload) -> None:
+def type_line(result: dict | None) -> str:
+    """Model view: the scan's type comes from the detector, not the shopper's pick."""
+    info = (result or {}).get("type_from_detector")
+    if not info:
+        return "No type yet"
+    return f'Type from detector: {label_of(info["type"])} ({info["conf"]:.2f})'
+
+
+def _top_row() -> None:
     """Heading, stand-in note and Developer box in one compact row (wraps when narrow)."""
     with st.container(key="mv_top", horizontal=True, vertical_alignment="center"):
-        result = st.session_state.result
+        result = st.session_state.mv_result  # Model view's own (frozen) capture
         if result is not None:
-            source = "uploaded photo" if st.session_state.source == "upload" else "last auto-scan"
-            info = f"{source.capitalize()} · selected type: {label_of(st.session_state.selected_type)}"
-        elif st.session_state.image is not None:
-            info = "Still frame captured · select the item in Shopper to grade it"
+            info = f"Captured scan · {type_line(result)}"
+        elif st.session_state.mv_image is not None:
+            info = "Still frame captured · No type yet"
         else:
-            info = "Waiting for a still scene"
+            info = "Waiting for a still scene · No type yet"
         st.markdown(f'<div class="mv-head"><h1 class="mv-title">What the models see, live</h1>'
                     f'<span class="mv-sub">{escape(info)}</span></div>', unsafe_allow_html=True)
         if result is not None and result.get("simulated"):  # only a forced rule uses the stand-in
@@ -56,18 +55,12 @@ def _top_row(on_upload) -> None:
             st.markdown('<span class="dev-tag">DEVELOPER</span>', unsafe_allow_html=True)
             st.selectbox("Simulate outcome", list(SIM_OPTIONS), format_func=SIM_OPTIONS.get,
                          key="simulate_rule")
-            st.number_input("Simulated weight (kg)", 0.05, 5.0, step=0.05, key="weight_kg")
-            key = f"up_{st.session_state.input_nonce}"
-            st.file_uploader("Upload photo (backup)", type=["png", "jpg", "jpeg"], key=key,
-                             on_change=on_upload, args=(key,),
-                             help="A backup if the camera fails: the photo goes through the same path as an auto-scan.")
-    if st.session_state.get("photo_error"):
-        st.error(st.session_state.photo_error)
 
 
-def _decision_card(result: dict) -> str:
+def _decision_card(result: dict, bypassed: bool = False) -> str:
+    """The real decision. ``bypassed`` (demo mode): a smaller, muted card under the demo price."""
     rule = result["rule_id"]
-    text, _ = banner_for("result", result)
+    text = PRICED_BANNER if is_priced(result) else (result.get("message") or FALLBACK_DETAIL)
     formula = ""
     if is_priced(result):
         p = result["price"]
@@ -75,11 +68,57 @@ def _decision_card(result: dict) -> str:
                    f' × (1 − {(p["discount"] or 0):.0%}) = {D}{p["total"]:.2f}</span>')
     alert = (('<span class="chip" style="background:#FFE9E4;color:#8A1C0E">Staff alert raised</span>')
              if result.get("staff_alert") else '<span class="chip">No staff alert</span>')
+    chips = (f'<div style="display:flex;flex-wrap:wrap;gap:8px"><span class="chip">Energy score '
+             f'{result.get("energy", 0):.2f}</span>{alert}</div>')
+    if bypassed:  # demo mode: decide's real result, muted, under the demo card
+        return (f'<div class="card real-muted"><span class="card-tag">REAL-LIFE RULE (BYPASSED IN DEMO)</span>'
+                f'<span class="dec-rule-sm">Real-life rule (bypassed in demo): Rule {rule} · '
+                f'{escape(RULE_NAMES.get(rule, "Unknown"))}</span>'
+                f'<span style="font-size:14px">“{escape(text)}”</span>{chips}'
+                f'<span class="demo-grey">{escape(demo_note(result))}</span></div>')
     return (f'<div class="card"><span class="card-tag">DECISION</span>'
             f'<span class="dec-rule">Rule {rule} · {escape(RULE_NAMES.get(rule, "Unknown"))}</span>'
-            f'<span style="font-size:15px">“{escape(text)}”</span>{formula}'
-            f'<div style="display:flex;flex-wrap:wrap;gap:8px"><span class="chip">Energy score '
-            f'{result.get("energy", 0):.2f}</span>{alert}</div></div>')
+            f'<span style="font-size:15px">“{escape(text)}”</span>{formula}{chips}</div>')
+
+
+def _demo_card(result: dict, demo: dict) -> str:
+    """DEMO MODE: the camera-tuned price, the main card (the real decision follows, muted)."""
+    if demo["total"] is None:
+        price, formula = "Not for sale", ""
+    else:
+        price = f'{D}{demo["total"]:.2f}'
+        formula = (f'<span class="mono" style="font-size:15px">{demo["weight_kg"]:.3f} kg × {D}{demo["price_per_kg"]:.2f}'
+                   f' × (1 − {demo["discount"]:.0%}) = {D}{demo["total"]:.2f}</span>')
+    days = "" if demo.get("days") is None else f' · {demo["days"]:.0f} days left'
+    return (f'<div class="card demo-card" role="note"><span class="card-tag"><span class="demo-tag">DEMO</span> '
+            f'DEMO PRICE · {escape(label_of(result.get("selected_type")).upper())} '
+            f'<span class="fr-tag hl">camera-tuned (demo)</span></span>'
+            f'<span class="demo-price">{price} <span class="demo-tier" style="background:{TIER_BG.get(demo["tier"], "#1F6F47")}">Tier {escape(demo["tier"])}</span></span>'
+            f'<span style="font-size:15px">Camera-tuned bag freshness <b>{demo["freshness"]:.0%}</b>{days}</span>{formula}</div>')
+
+
+def _demo_rule_card(outcome: dict) -> str:
+    """DEMO MODE: the detector rule (3 or 4) the demo applies instead of a price."""
+    rule = outcome["rule_id"]
+    return (f'<div class="card demo-card" role="note"><span class="card-tag"><span class="demo-tag">DEMO</span> '
+            f'DETECTOR RULE APPLIED</span>'
+            f'<span class="dec-rule">Rule {rule} · {escape(RULE_NAMES.get(rule, "Unknown"))}</span>'
+            f'<span style="font-size:15px">“{escape(outcome.get("message") or FALLBACK_DETAIL)}”</span></div>')
+
+
+def _decision_tab(result: dict) -> str:
+    """Decision tab, top to bottom. Camera-tuned values lead, the actual model (ResNet-50) follows,
+    except under a real rule-7 price, which uses ResNet-50 (camera-tuned shown below it, display only)."""
+    demo, rule_out = demo_price(result), demo_rule(result)
+    if demo is not None:      # demo price: camera-tuned price, ResNet-50 values, the real rule (muted)
+        top = _demo_card(result, demo) + fresh_card(result, primary=False) + _decision_card(result, bypassed=True)
+    elif rule_out is not None:  # demo with a detector rule: that rule, both models, the real rule (muted)
+        top = _demo_rule_card(rule_out) + fresh_card(result) + _decision_card(result, bypassed=True)
+    elif is_priced(result):   # real price (ResNet-50), camera-tuned below, display only
+        top = _decision_card(result) + fresh_card(result)
+    else:                     # no demo: camera-tuned values, ResNet-50 values, the real decision
+        top = fresh_card(result) + _decision_card(result)
+    return top
 
 
 def _trace_card(fired: int) -> str:
@@ -127,29 +166,44 @@ DISPLAY_HELP = ("Fine-tuned on our own photos. Shown for comparison only; reject
                 "sold rotten produce 3× as often (notebook 9.11).")
 
 
+R50_COL = "Actual model (ResNet-50)"
+
+
 def _items_table(result: dict) -> pd.DataFrame:
+    """One row per item. Camera-tuned columns first, then "Actual model (ResNet-50)"; a real rule-7
+    price uses ResNet-50, so then its columns come first and camera-tuned is display only."""
     items = result.get("items", [])
-    display = any(it.get("freshness_display") is not None for it in items)  # display only, never decides
-    return pd.DataFrame([{
-        "#": f"#{i}",
-        "Detector type": label_of(it.get("produce")),
-        "Box conf.": f'{it["det_conf"]:.0%}',
-        "Freshness": f'{it["freshness"]:.0%}',
-        **({DISPLAY_COL: (f'{it["freshness_display"]:.0%} · {it.get("tier_display") or "—"}'
-                          if it.get("freshness_display") is not None else "—")} if display else {}),
-        "Tier": it.get("tier") or "—",
-        "Fresh. conf.": f'{it["fresh_conf"]:.0%}',
-        "Days left": it.get("days_left"),
-        "Blemish %": f'{it["blemish_pct"]:.1f}',
-        "Seg. conf.": f'{it["seg_conf"]:.0%}',
-    } for i, it in enumerate(items, start=1)])
+    display = any(it.get("freshness_display") is not None for it in items)  # never decides
+    cam_name = DISPLAY_COL + (" (display only)" if is_priced(result) else " (demo)")
+    rows = []
+    for i, it in enumerate(items, start=1):
+        cam = {cam_name: (f'{it["freshness_display"]:.0%} · {it.get("tier_display") or "—"}'
+                          + (f' · {it["days_display"]:.0f} d' if it.get("days_display") is not None else "")
+                          if it.get("freshness_display") is not None else "—")} if display else {}
+        r50 = {R50_COL: f'{it["freshness"]:.0%} · {it.get("tier") or "—"} · {float(it.get("days_left") or 0):.0f} d',
+               "Fresh. conf.": f'{it["fresh_conf"]:.0%}'}
+        head = {"#": f"#{i}", "Detector type": label_of(it.get("produce")), "Box conf.": f'{it["det_conf"]:.0%}'}
+        tail = {"Blemish %": f'{it["blemish_pct"]:.1f}', "Seg. conf.": f'{it["seg_conf"]:.0%}'}
+        rows.append({**head, **(r50 if is_priced(result) else cam), **(cam if is_priced(result) else r50), **tail})
+    return pd.DataFrame(rows)
 
 
-def render(live_view, on_upload) -> None:
+def _toggles() -> None:
+    with st.container(horizontal=True, key="mv_toggles"):
+        st.toggle("Boxes + type (detector)", key="ov_boxes")
+        st.toggle("Freshness % (ResNet-50)", key="ov_fresh")
+        st.toggle("Blemish mask (U-Net)", key="ov_blemish")
+        if models.has_display():
+            st.toggle("Camera-tuned % (display only)", key="ov_disp",
+                      help="Not used for the price. " + DISPLAY_HELP)
+        st.toggle("Occlusion map (item #1)", key="ov_cam")
+
+
+def render(live_view) -> None:
     with st.container(key="modelpage"):
-        _top_row(on_upload)
-        result = st.session_state.result
-        image = st.session_state.image
+        _top_row()
+        result = st.session_state.mv_result  # the frozen capture (kept until "Reset scan")
+        image = st.session_state.mv_image
         # spinners go in fixed slots, so the live view keeps its place in the page (and is not remounted)
         slot = st.empty()
         if result is not None and image is not None and result["items"] and "forecasts" not in result["items"][0]:
@@ -158,15 +212,9 @@ def render(live_view, on_upload) -> None:
             slot.empty()
         with st.container(key="mv_cols"):
             left, right = st.columns([1.7, 1])
+            # the toggles are drawn in the right panel; their values are already in Session State here
+            cam = bool(st.session_state.ov_cam)
             with left, st.container(key="mv_left"):
-                with st.container(horizontal=True, key="mv_toggles"):
-                    st.toggle("Boxes + type (detector)", key="ov_boxes")
-                    st.toggle("Freshness % (ResNet-50)", key="ov_fresh")
-                    st.toggle("Blemish mask (U-Net)", key="ov_blemish")
-                    if models.has_display():
-                        st.toggle("Camera-tuned % (display only)", key="ov_disp",
-                                  help="Not used for the price. " + DISPLAY_HELP)
-                    cam = st.toggle("Occlusion map (item #1)", key="ov_cam")
                 occ_slot = st.empty()
                 if st.session_state.ov_disp and models.has_display():
                     pipeline.ensure_display(result, image)  # scan made without it (e.g. in Shopper); once
@@ -176,25 +224,27 @@ def render(live_view, on_upload) -> None:
                         pipeline.ensure_occlusion(result, image, 0)  # item #1, on demand, cached on the result
                     occ_slot.empty()
                 live_view("model")
-                st.markdown('<span class="mv-foot">Boxes and types update every frame (detector in the browser). '
-                            'Freshness and the blemish mask come from the last auto-scan, run on the server.</span>',
-                            unsafe_allow_html=True)
+                st.markdown('<span class="mv-foot">Live: boxes and types update every frame (detector in the '
+                            'browser). Once the scene is still the frame is captured, graded on the server and held '
+                            'with its overlays until Reset scan.</span>', unsafe_allow_html=True)
             with right, st.container(key="mv_right"):
+                _toggles()
                 decision, items, curve_tab, log = st.tabs(["Decision", "Items", "Curve", "Log"])
                 with decision:
                     if result is None:
                         st.markdown('<p class="mv-none">No scan yet. The scale scans by itself once the items '
                                     'are still.</p>', unsafe_allow_html=True)
                     else:
-                        st.markdown(_decision_card(result) + _trace_card(result["rule_id"])
+                        st.markdown(_decision_tab(result) + _trace_card(result["rule_id"])
                                     + _thresholds_card(result.get("thresholds", {}), bool(result.get("simulated"))),
                                     unsafe_allow_html=True)
                 with items:
                     st.markdown('<span class="card-tag">ITEMS IN THIS SCAN</span>', unsafe_allow_html=True)
                     if result is not None:
-                        st.dataframe(_items_table(result), hide_index=True,
-                                     column_config={DISPLAY_COL: st.column_config.TextColumn(DISPLAY_COL,
-                                                                                             help=DISPLAY_HELP)})
+                        card = fresh_card(result)  # bag level: camera-tuned first, ResNet-50 below
+                        if card:
+                            st.markdown(card, unsafe_allow_html=True)
+                        st.dataframe(_items_table(result), hide_index=True)
                 with curve_tab:
                     st.markdown('<span class="card-tag">FRESHNESS CURVE (ITEM #1)</span>', unsafe_allow_html=True)
                     first = result["items"][0] if result is not None and result["items"] else {}
