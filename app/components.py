@@ -201,6 +201,32 @@ CSS = """
 [class*="st-key-pick_"] button { width:100% !important; height:100% !important; background:transparent !important; border:none !important;
   color:transparent !important; box-shadow:none !important; border-radius:14px !important; cursor:pointer; }
 .stApp p.not-here { margin:4px 0 0; font-size:12px; color:#5A6E64; }
+/* Shopper step 1: the tiles only, larger, centred in the scale screen */
+.st-key-choose_page { width:100%; max-width:min(1000px, 100%); margin:0 auto; justify-content:center; gap:clamp(6px, 1.4vh, 14px) !important; }
+.st-key-choose_page [data-testid="stHorizontalBlock"] { gap:clamp(8px, 1.4vw, 18px) !important; }
+.pick-head { display:block; text-align:center; font-size:clamp(17px, 2.8vh, 24px) !important; color:#10261B !important; }
+.st-key-choose_page [class*="st-key-tile_"] { min-height:clamp(96px, 17vh, 190px); }
+.st-key-choose_page .tile svg { width:clamp(44px, 8vh, 96px); height:clamp(44px, 8vh, 96px); }
+.st-key-choose_page .tile-name { font-size:clamp(16px, 2.6vh, 24px); }
+.st-key-choose_page .tile-price { font-size:clamp(13px, 2vh, 18px); }
+.st-key-choose_page p.not-here { text-align:center; font-size:clamp(12px, 1.7vh, 14px); }
+/* Shopper step 2: the chosen item */
+.st-key-weighing { background:#FFFFFF; border-radius:12px; padding:clamp(4px, .9vh, 10px) 12px; gap:10px !important;
+  justify-content:space-between; flex-wrap:wrap; }
+.weighing { display:flex; align-items:center; gap:10px; font-size:clamp(14px, 2.1vh, 18px); color:#10261B; }
+.weighing svg { width:clamp(26px, 4vh, 36px); height:clamp(26px, 4vh, 36px); flex:none; }
+.st-key-w_change button { min-height:clamp(34px, 4.8vh, 44px); border-radius:12px !important; font-weight:600 !important; }
+.st-key-weighing [data-testid="stElementContainer"] { width:auto !important; }
+.readout .rv.muted { color:#9DB0A6; }
+/* "Why this price?": result pop-up and PRINT page */
+.why { display:flex; flex-direction:column; gap:clamp(4px, .9vh, 10px); margin-top:4px; }
+.why-top { display:grid; grid-template-columns:minmax(0, 1.2fr) minmax(0, 1fr); gap:8px; align-items:stretch; }
+.why-top .fr-sub { justify-content:center; }
+.why-formula { grid-column:1 / -1; font-size:clamp(13px, 1.9vh, 16px); background:#FFFFFF; border-radius:10px; padding:clamp(4px, .8vh, 8px) 10px; }
+.why-pics { display:grid; grid-template-columns:repeat(5, minmax(0, 1fr)); gap:8px; }
+.why-pics .fc img { max-height:clamp(56px, 13vh, 150px); }
+.why-pics .fc.blem span { font-weight:700; }
+.st-key-side_why, .st-key-side_printed { justify-content:flex-start; }
 
 /* priced ticket */
 .st-key-ticket { position:relative; background:#FFFFFF; border-radius:14px 14px 0 0; gap:6px !important;

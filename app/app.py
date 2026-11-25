@@ -56,8 +56,8 @@ def init_state() -> None:
         "ov_blemish": False,
         "ov_cam": False,
         "ov_disp": True,      # camera-tuned % (display only), Model view
-        "view": "Model view",
-        "_view_prev": "Model view",
+        "view": "Shopper",
+        "_view_prev": "Shopper",
         "model_error": None,
     }
     for key, value in defaults.items():
@@ -95,6 +95,13 @@ def on_reset() -> None:
     mode2.rearm()
 
 
+def shopper_price_held() -> bool:
+    """Shopper: a price (or a printed label) is on screen. It stays until Reset scan, Next item, Home or
+    Change item; camera motion and new still frames are ignored meanwhile."""
+    s = st.session_state
+    return s.screen == "printed" or (s.screen == "result" and mode2.shown_price(s.result) is not None)
+
+
 def take_frame(image: Image.Image, frame: dict, source: str) -> None:
     """A new frame. Shopper: grade it now if a type is selected, else wait for the pick.
 
@@ -104,6 +111,8 @@ def take_frame(image: Image.Image, frame: dict, source: str) -> None:
         if st.session_state.mv_image is None:
             st.session_state.update(mv_image=image, mv_frame=frame)
             scan_model()
+        return
+    if shopper_price_held():  # keep the price on screen
         return
     st.session_state.update(image=image, frame=frame, source=source, result=None, screen="live")
     if st.session_state.selected_type:
@@ -122,10 +131,10 @@ def on_live() -> None:
         if image is not None:
             take_frame(image, live.frame_meta(value, image), "camera")
     elif kind == "scene":
-        # Shopper: items moved or were taken off, drop that frame and its grades (a printed label stays).
-        # Model view: a capture stays frozen until "Reset scan".
+        # Shopper: items moved or were taken off, drop that frame and its grades, unless a price or a
+        # printed label is on screen (kept until Reset scan / Next item). Model view: frozen until Reset scan.
         if current_view() != "Model view" and st.session_state.source == "camera" \
-                and st.session_state.screen != "printed":
+                and not shopper_price_held():
             mode2.clear_frame()
     elif kind == "live":
         mode2.clear_frame()
@@ -218,7 +227,7 @@ def navbar() -> None:
             )
         with mid:
             with st.container(key="nav_mid", horizontal=True, horizontal_alignment="center"):
-                # The "Model view" default is seeded in Session State (init_state), not via
+                # The "Shopper" default is seeded in Session State (init_state), not via
                 # default=: callbacks write st.session_state.view, and a non-None default
                 # plus a Session State write makes Streamlit show a warning. A constant
                 # default also keeps the widget's identity stable across reruns.

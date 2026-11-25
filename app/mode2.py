@@ -46,6 +46,7 @@ RULE_NAMES = {
     7: "Price from bag freshness",
 }
 TIER_SHORT = {"A": "full price", "B": "20% off", "C": "50% off", "D": "not for sale"}
+NO_PRICE_RULES = (3, 4)  # several types / wrong selection (real or demo): Shopper shows no price at all
 DETECTOR_RULE_NOTE = "Detector rule applied in demo (freshness rules bypassed)."
 
 
@@ -66,7 +67,7 @@ def banner_for(screen: str, result: dict | None) -> tuple[str, str]:
         rule = shown_rule(result)
         text = (demo_rule(result) or {}).get("message") or result.get("message") or FALLBACK_DETAIL
         return text, "stop" if rule == 5 else "warn"
-    if screen == "live" and needs_type():
+    if screen == "live" and not st.session_state.get("selected_type"):  # step 1: pick the item first
         return BANNERS["select"], "ask"
     return BANNERS.get(screen, BANNERS["live"]), ""
 
@@ -270,8 +271,10 @@ def scan_again() -> None:
 
 
 def change_item() -> None:
-    """Back to the tiles; the frame is kept, so picking a type grades it straight away."""
-    st.session_state.update(screen="live", result=None, selected_type=None)
+    """Back to step 1 (the tiles): clear the current scan and the pick; the camera stops."""
+    clear_frame()
+    st.session_state.selected_type = None
+    rearm()
 
 
 def call_staff() -> None:
@@ -286,7 +289,9 @@ def readouts(screen: str, result: dict | None, prices: dict[str, float]) -> None
     unit = prices.get(selected, 0.0) if selected else 0.0
     shown = shown_price(result) if screen in ("result", "printed") else None
     total_label, total_cls, total_text = f"TOTAL ({D})", "rv", "0.00"
-    if shown is not None:
+    if screen == "result" and result and shown_rule(result) in NO_PRICE_RULES:
+        total_cls, total_text = "rv muted", "--"  # several types / wrong type: no price anywhere
+    elif shown is not None:
         total_text = "NOT FOR SALE" if shown["total"] is None else f'{shown["total"]:.2f}'
         if shown["total"] is None:
             total_cls = "rv nfs"
@@ -322,12 +327,12 @@ def footer() -> None:
 
 # ---------------------------------------------------------------- side panel
 def tiles(scan, prices: dict[str, float]) -> None:
-    """Which item are you weighing? Picking grades the waiting frame, if there is one."""
-    st.markdown('<span class="side-head">Which item are you weighing?</span>', unsafe_allow_html=True)
+    """Step 1: which item are you weighing? Picking it starts step 2 (camera and auto-scan)."""
+    st.markdown('<span class="side-head pick-head">Which item are you weighing?</span>', unsafe_allow_html=True)
     clicked = None
     asking = needs_type()
-    for row in (TYPES[0:2], TYPES[2:4], TYPES[4:6]):
-        for column, produce in zip(st.columns(2), row):
+    for row in (TYPES[0:3], TYPES[3:6]):
+        for column, produce in zip(st.columns(3), row):
             price = prices.get(produce, 0.0)
             name = label_of(produce)
             state = " on" if st.session_state.selected_type == produce else (" ask" if asking else "")
@@ -338,40 +343,70 @@ def tiles(scan, prices: dict[str, float]) -> None:
                             unsafe_allow_html=True)
                 if st.button(f"{name}, ${price:.2f} per kg", key=f"pick_{produce}"):
                     clicked = produce
-    st.markdown('<p class="not-here">Pick before or after placing; the scale checks as soon as the items '
-                'are still.</p>', unsafe_allow_html=True)
+    st.markdown('<p class="not-here">Pick your item, then place it on the scale: it checks as soon as the '
+                'items are still.</p>', unsafe_allow_html=True)
     if clicked:
         if st.session_state.selected_type != clicked:
             st.session_state.failed_scans = 0
         st.session_state.selected_type = clicked
-        if st.session_state.image is not None:  # a still frame is waiting: grade it now
-            with st.spinner(SPINNER_TEXT):
-                scan()
+        clear_frame()  # step 2 starts with a fresh camera and scan
+        rearm()
         st.rerun()
+
+
+def weighing_head(prices: dict[str, float], with_button: bool) -> None:
+    """Step 2: the chosen item; while waiting for a still scene, a Change item button too."""
+    produce = st.session_state.selected_type
+    with st.container(key="weighing", horizontal=True, vertical_alignment="center"):
+        st.markdown(f'<div class="weighing">{produce_svg(produce, 36)}<span>Weighing: <b>{escape(label_of(produce))}</b>'
+                    f' · {D}{prices.get(produce, 0.0):.2f}/kg</span></div>', unsafe_allow_html=True)
+        if with_button:
+            st.button("Change item", key="w_change", on_click=change_item)
+    if with_button:
+        st.markdown('<p class="not-here">Place the item on the scale. It scans by itself once the items are '
+                    'still.</p>', unsafe_allow_html=True)
 
 
 @st.dialog("Why this price?", width="large")
 def why_dialog(result: dict) -> None:
-    """Pop-up with the blemish card and forecast row; never grows the page."""
+    """Pop-up with the same "Why this price?" panel as the PRINT page; never grows the page."""
     pipeline.ensure_forecast(result, st.session_state.image)  # forecast runs only when asked for
-    st.markdown(_why_panel(result), unsafe_allow_html=True)
+    st.markdown(why_html(result), unsafe_allow_html=True)
 
 
-def _why_panel(result: dict) -> str:
-    image = st.session_state.image
-    item = result["items"][0]
-    if image is None:
+def why_html(result: dict) -> str:
+    """Why this price? Freshness and tier (camera-tuned for a demo price, ResNet-50 for a real one) with
+    the discount and days left, the other model muted below, the price formula, blemish % with the
+    blemish overlay, the +1/+3/+7-day illustrations, and the grey demo note for a demo price."""
+    image, price = st.session_state.image, shown_price(result)
+    if image is None or price is None or not result.get("items"):
         return ""
-    blem = views.data_uri(views.blemish_photo(image, result["items"]))
+    item = result["items"][0]
+    disc = price["discount"] or 0.0
+    days = price.get("days")
+    days_txt = f" · best within {max(1, int(days))} days" if days is not None else ""
+    disc_txt = f"{disc:.0%} off" if disc else "full price"
+    tag = '<span class="fr-tag hl">camera-tuned (demo)</span>' if price["demo"] else ""
+    formula = (f'{price["weight_kg"]:.3f} kg × {D}{price["price_per_kg"]:.2f} × (1 − {disc:.0%}) = '
+               f'{D}{price["total"]:.2f}' if price["total"] is not None else "Not for sale")
+    vals = fresh_summary(result)
+    other, other_title = (vals["r50"], "Actual model (ResNet-50)") if price["demo"] else \
+        (vals["cam"], "Camera-tuned (display only)")
+    other_html = (f'<div class="fr-sub"><span class="fr-h">{other_title}</span>'
+                  f'<span class="fr-v">{escape(_fmt(other))}</span></div>') if other else ""
+    blem = views.data_uri(views.blemish_photo(image, result["items"]), 320)
     frames = "".join(f'<div class="fc"><img src="{views.data_uri(img, 200)}" alt="{escape(lbl)}">'
                      f'<span>{escape(lbl)}</span></div>' for lbl, _, img in views.forecast_frames(image, item))
-    return (f'<div class="why-grid"><div class="why-card"><span class="why-title">Blemishes found '
-            f'({item["blemish_pct"]:.0f}% of the item)</span>'
-            f'<div class="why-photo" role="img" aria-label="Your photo with any blemish area marked in red" '
-            f'style="background-image:url({blem})"></div></div>'
-            f'<div class="why-card"><span class="why-title">How it may look in a few days</span>'
-            f'<div class="fc-grid">{frames}</div>'
-            f'<span class="illus">Illustration (AI-generated), not used for the price</span></div></div>')
+    note = f'<p class="demo-grey">{escape(demo_note(result))}</p>' if price["demo"] else ""
+    return (f'<div class="why">'
+            f'<div class="why-top"><div class="fr-main"><span class="fr-h">Freshness {tag}</span>'
+            f'<span class="fr-big">{price["freshness"]:.0%} <span class="pill" style="background:'
+            f'{TIER_BG.get(price["tier"], "#1F6F47")}">Tier {escape(price["tier"])} · {disc_txt}</span></span>'
+            f'<span class="fr-v">{escape(days_txt.lstrip(" ·"))}</span></div>{other_html}'
+            f'<div class="why-formula mono">{formula}</div></div>'
+            f'<div class="why-pics"><div class="fc blem"><img src="{blem}" alt="Your photo with any blemish '
+            f'area marked in red"><span>Blemishes {item["blemish_pct"]:.0f}%</span></div>{frames}</div>'
+            f'<span class="illus">Illustration (AI-generated), not used for the price</span>{note}</div>')
 
 
 def result_priced(result: dict) -> None:
@@ -434,11 +469,10 @@ def result_stopped(result: dict) -> None:
     st.markdown(f'<div class="stop-box"><div class="stop-icon" style="background:{colour}">'
                 f'{icon_svg("alert", "#FFFFFF", 48)}</div><p class="stop-detail">{escape(detail)}</p>{pill}</div>',
                 unsafe_allow_html=True)
-    card = fresh_card(result)  # camera-tuned on top, ResNet-50 below
-    if card:
-        st.markdown(card, unsafe_allow_html=True)
-    if demo_rule(result) is not None:
-        st.markdown(f'<p class="demo-grey" role="note">{escape(demo_note(result))}</p>', unsafe_allow_html=True)
+    if rule not in NO_PRICE_RULES:  # several types / wrong type: only the message and the buttons
+        card = fresh_card(result)  # camera-tuned on top, ResNet-50 below
+        if card:
+            st.markdown(card, unsafe_allow_html=True)
     with st.container(horizontal=True, horizontal_alignment="center"):
         st.button("Change item", key="change_item", on_click=change_item)
         st.button("Scan again", key="scan_again", on_click=scan_again)
@@ -470,6 +504,14 @@ def printed(result: dict) -> None:
         st.button("Next item", key="next_item", on_click=go_home)
 
 
+def printed_why(result: dict) -> None:
+    """PRINT page, right: the same "Why this price?" panel as the result panel's pop-up."""
+    if "forecasts" not in (result.get("items") or [{}])[0]:
+        with st.spinner("Preparing the forecast pictures…"):
+            pipeline.ensure_forecast(result, st.session_state.image)
+    st.markdown('<span class="side-head">Why this price?</span>' + why_html(result), unsafe_allow_html=True)
+
+
 # ---------------------------------------------------------------- entry
 def render(scan, prices: dict[str, float], live_view) -> None:
     """Readouts and prompt; the live view on the left and the side panel on the right."""
@@ -487,22 +529,28 @@ def render(scan, prices: dict[str, float], live_view) -> None:
             readouts(screen, result, prices)
             banner(screen, result)
             with st.container(key="sbody"):
-                left, right = st.columns([1.65, 1], gap="medium")
-                with left, st.container(key="s_live"):
-                    live_view("shopper")
-                if screen == "printed":
-                    side = "printed"
-                elif screen == "result":
-                    side = "priced" if shown is not None else "stop"  # rule 7, or a demo price
-                else:
-                    side = "tiles"
-                with right, st.container(key=f"side_{side}"):
-                    if side == "tiles":
-                        tiles(scan, prices)
-                    elif side == "priced":
-                        result_priced(result)
-                    elif side == "stop":
-                        result_stopped(result)
-                    else:
+                if screen == "printed":  # the label and "Why this price?"; no camera
+                    left, right = st.columns([1, 1.5], gap="medium")
+                    with left, st.container(key="side_printed"):
                         printed(result)
+                    with right, st.container(key="side_why"):
+                        printed_why(result)
+                elif not st.session_state.selected_type:  # step 1: the tiles only, camera stopped
+                    with st.container(key="choose_page"):
+                        tiles(scan, prices)
+                else:  # step 2: camera and the chosen item, then the result
+                    left, right = st.columns([1.65, 1], gap="medium")
+                    with left, st.container(key="s_live"):
+                        live_view("shopper")
+                    if screen == "result":
+                        side = "priced" if shown is not None else "stop"  # rule 7, or a demo price
+                    else:
+                        side = "wait"
+                    with right, st.container(key=f"side_{side}"):
+                        if side != "priced":  # the priced ticket already names the item and its $/kg
+                            weighing_head(prices, with_button=side == "wait")
+                        if side == "priced":
+                            result_priced(result)
+                        elif side == "stop":
+                            result_stopped(result)
             footer()
