@@ -96,10 +96,13 @@ def _png_uri(image: Image.Image) -> str:
     return "data:image/png;base64," + base64.b64encode(buffer.getvalue()).decode()
 
 
-def _item_arg(item: dict, cap: int | None, blemish: bool, occlusion: bool) -> dict:
+def _item_arg(item: dict, cap: int | None, blemish: bool, occlusion: bool, display: bool = False) -> dict:
     out = {"cap": cap, "box": [float(v) for v in item["box"]], "produce": item.get("produce"),
            "det_conf": float(item.get("det_conf", 0.0)), "freshness": float(item["freshness"]),
            "tier": item.get("tier")}
+    # camera-tuned % (display only): sent only for Model view with its toggle on, never to the Shopper view
+    if display and item.get("freshness_display") is not None:
+        out["fresh_disp"], out["tier_disp"] = float(item["freshness_display"]), item.get("tier_display")
     if blemish:
         patch = views.blemish_patch(item)
         if patch is not None:
@@ -112,7 +115,8 @@ def _item_arg(item: dict, cap: int | None, blemish: bool, occlusion: bool) -> di
     return out
 
 
-def grades_arg(result: dict | None, frame: dict | None, blemish: bool = False, occlusion: bool = False) -> dict | None:
+def grades_arg(result: dict | None, frame: dict | None, blemish: bool = False, occlusion: bool = False,
+               display: bool = False) -> dict | None:
     """Grades for the frame the browser sent: one entry per server item, with the browser box it matches."""
     if not frame or frame.get("ts") is None:
         return None
@@ -120,22 +124,24 @@ def grades_arg(result: dict | None, frame: dict | None, blemish: bool = False, o
     if result is None or result.get("frame_ts") != frame["ts"]:
         return {**base, "items": [], "need_type": True}
     caps = match_items(result.get("items", []), frame["boxes"], bool(result.get("simulated")))
-    items = [_item_arg(it, cap, blemish, occlusion and k == 0) for k, (it, cap) in enumerate(zip(result["items"], caps))]
+    items = [_item_arg(it, cap, blemish, occlusion and k == 0, display)
+             for k, (it, cap) in enumerate(zip(result["items"], caps))]
     return {**base, "items": items, "need_type": False}
 
 
-def still_arg(image: Image.Image | None, result: dict | None, blemish: bool = False, occlusion: bool = False) -> dict | None:
+def still_arg(image: Image.Image | None, result: dict | None, blemish: bool = False, occlusion: bool = False,
+              display: bool = False) -> dict | None:
     """An uploaded photo for the component to show instead of the camera, with the server's boxes."""
     if image is None:
         return None
-    items = [] if result is None else [_item_arg(it, None, blemish, occlusion and k == 0)
+    items = [] if result is None else [_item_arg(it, None, blemish, occlusion and k == 0, display)
                                        for k, it in enumerate(result.get("items", []))]
     return {"src": views.data_uri(image, 1280), "w": image.width, "h": image.height, "items": items}
 
 
 def render(view: str, *, key: str, on_change, grades: dict | None, still: dict | None, rearm: int,
            show_boxes: bool = True, show_fresh: bool = True, show_blemish: bool = False, show_occ: bool = False,
-           aspect: float = 0.62, max_height: int = 620) -> Any:
+           show_disp: bool = False, aspect: float = 0.62, max_height: int = 620) -> Any:
     classes = []
     try:
         classes = list(models.load_config().classes)
@@ -143,6 +149,7 @@ def render(view: str, *, key: str, on_change, grades: dict | None, still: dict |
         pass
     return _component(view=view, det_url=detector_url(), classes=classes, grades=grades, still=still,
                       rearm=int(rearm), show_boxes=bool(show_boxes), show_fresh=bool(show_fresh),
-                      show_blemish=bool(show_blemish), show_occ=bool(show_occ), aspect=aspect,
+                      show_blemish=bool(show_blemish), show_occ=bool(show_occ), show_disp=bool(show_disp),
+                      aspect=aspect,
                       max_height=max_height, key=key, on_change=on_change, default=None)
 

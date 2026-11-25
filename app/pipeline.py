@@ -119,6 +119,18 @@ def grade(session, units: list[np.ndarray]) -> dict[str, np.ndarray]:
     return {"batch": batch, "logits": logits, "freshness": fresh, "days_left": days, "energy": -_logsumexp(logits)}
 
 
+def grade_display(session, batch: np.ndarray, rules: dict) -> list[dict]:
+    """DISPLAY ONLY: the camera-tuned freshness model on the batch ``grade`` already built.
+
+    Rejected for pricing (notebook 9.11). Called after the rule engine has decided, and nothing
+    downstream (pricing.decide, rules, Shopper view) reads what it returns.
+    """
+    fresh = session.run(["freshness"], {"image": batch})[0]
+    tiers = models.scale_pricing.tier_idx(fresh, rules)
+    return [{"freshness_display": float(f), "tier_display": models.scale_pricing.TIERS[int(t)]}
+            for f, t in zip(fresh, np.atleast_1d(tiers))]
+
+
 def blemish(session, crops: list[Image.Image], min_pct: float) -> list[dict]:
     t = time.perf_counter()
     batch = np.stack([_normalise(np.asarray(c.resize((224, 224), Image.BILINEAR), dtype=np.float32) / 255.0)
@@ -140,8 +152,13 @@ def blemish(session, crops: list[Image.Image], min_pct: float) -> list[dict]:
 
 
 # ---------------------------------------------------------------- full scan
-def analyse_real(image: Image.Image, selected_type: str, weight_kg: float, failed_scans: int) -> dict[str, Any]:
-    """Detector -> crops -> freshness -> rule engine -> blemish. Same dict shape as backend.analyse."""
+def analyse_real(image: Image.Image, selected_type: str, weight_kg: float, failed_scans: int,
+                 display: bool = False) -> dict[str, Any]:
+    """Detector -> crops -> freshness -> rule engine -> blemish. Same dict shape as backend.analyse.
+
+    ``display`` (Model view with "Camera-tuned %" on) also runs the display-only model after the
+    decision; otherwise it is skipped entirely (Shopper scans never run it).
+    """
     bundle = models.load_models()
     cfg, sess = bundle.config, bundle.sessions
     image = image.convert("RGB")
@@ -167,15 +184,23 @@ def analyse_real(image: Image.Image, selected_type: str, weight_kg: float, faile
             "items": scan_items}
     decision = models.scale_pricing.decide(scan, cfg.rules, cfg.prices, cfg.residuals)
 
+    # display only, after the decision: same preprocessed tensor, never passed to decide()
+    shown_grades = [{} for _ in found]
+    if display and found and models.DISPLAY_KEY in sess:
+        t = time.perf_counter()
+        shown_grades = grade_display(sess[models.DISPLAY_KEY], g["batch"], cfg.rules)
+        _timed("freshness_display", t, {"input": list(g["batch"].shape), "items": len(shown_grades)})
+
     blem = blemish(sess["blemish"], crops, float(cfg.rules["display"]["blemish_overlay_min_pct"])) if crops else []
 
     items = []
-    for d_item, cxy, b in zip(decision["items"], crops_xy, blem):
+    for d_item, cxy, b, shown_grade in zip(decision["items"], crops_xy, blem, shown_grades):
         x0, y0, x1, y1 = d_item["box"]
         ox, oy = x0 - cxy[0], y0 - cxy[1]
         shown = b["mask"][oy:oy + (y1 - y0), ox:ox + (x1 - x0)] if b["show"] else np.zeros((y1 - y0, x1 - x0), bool)
         items.append({**d_item, "days_left": round(float(d_item["days_left"]), 1), "crop_box": cxy,
-                      "blemish_mask": shown, "blemish_pct": b["blemish_pct"], "seg_conf": b["seg_conf"]})
+                      "blemish_mask": shown, "blemish_pct": b["blemish_pct"], "seg_conf": b["seg_conf"],
+                      **shown_grade})
 
     fields = dict(decision.get("fields") or {})
     others = [it for it in items if it["produce"] != selected_type]
@@ -230,6 +255,25 @@ def ensure_forecast(result: dict | None, image: Image.Image | None) -> None:
     item["forecasts"] = dict(zip(FORECAST_DAYS, frames))
     item["curve"] = [float(item["freshness"])] + [float(v) for v in graded]
     item["curve_days"] = [0, *FORECAST_DAYS]
+
+
+def ensure_display(result: dict | None, image: Image.Image | None) -> None:
+    """DISPLAY ONLY: camera-tuned % for a scan made without it (e.g. in Shopper), once per scan.
+
+    Same tensor as the scan (crop_box -> shorter side 256 -> centre crop 224). Never changes a decision.
+    """
+    if not result or image is None or result.get("simulated") or not result.get("items")             or all("freshness_display" in it for it in result["items"]):
+        return
+    bundle = models.load_models()
+    if models.DISPLAY_KEY not in bundle.sessions:
+        return
+    t = time.perf_counter()
+    rgb_image = image.convert("RGB")
+    batch = np.stack([_normalise(_fresh_unit(rgb_image.crop(tuple(it["crop_box"])))) for it in result["items"]])
+    for item, shown in zip(result["items"], grade_display(bundle.sessions[models.DISPLAY_KEY], batch,
+                                                          bundle.config.rules)):
+        item.update(shown)
+    _timed("freshness_display", t, {"input": list(batch.shape), "items": len(result["items"])})
 
 
 def _occlusion_heat(session, crop: Image.Image) -> np.ndarray:

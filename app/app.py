@@ -30,7 +30,7 @@ VIEWS = ["Shopper", "Model view"]
 
 # Widget keys that must survive while their widget is not on screen (Model view
 # controls are not rendered in Shopper mode, and Streamlit drops unrendered widget state).
-PERSISTENT_WIDGET_KEYS = ("simulate_rule", "weight_kg", "ov_boxes", "ov_fresh", "ov_blemish", "ov_cam")
+PERSISTENT_WIDGET_KEYS = ("simulate_rule", "weight_kg", "ov_boxes", "ov_fresh", "ov_blemish", "ov_cam", "ov_disp")
 LIVE_KEY = "live"
 
 
@@ -54,6 +54,7 @@ def init_state() -> None:
         "ov_fresh": True,
         "ov_blemish": False,
         "ov_cam": False,
+        "ov_disp": True,      # camera-tuned % (display only), Model view
         "view": "Shopper",
         "_view_prev": "Shopper",
         "model_error": None,
@@ -144,7 +145,9 @@ def scan() -> bool:
                 f"Model view still work. Details: {type(exc).__name__}: {str(exc).splitlines()[0][:200] if str(exc) else ''}")
             return False
         st.session_state.model_error = None
-        result = pipeline.analyse_real(*args)
+        # camera-tuned % (display only): only for Model view with its toggle on; Shopper never runs it
+        view = st.session_state.get("view") or st.session_state._view_prev
+        result = pipeline.analyse_real(*args, display=view == "Model view" and bool(st.session_state.ov_disp))
     else:
         result = backend.analyse(*args, simulate)
     result["frame_ts"] = (st.session_state.frame or {}).get("ts")  # which frame these grades belong to
@@ -194,13 +197,14 @@ def live_view(view: str) -> None:
     s = st.session_state
     model = view == "model"
     blemish, occ = model and bool(s.ov_blemish), model and bool(s.ov_cam)
+    disp = model and bool(s.ov_disp)          # display only, never in the Shopper view
     upload = s.source == "upload"
     live.render(
         view, key=LIVE_KEY, on_change=on_live, rearm=s.rearm,
-        grades=None if upload else live.grades_arg(s.result, s.frame, blemish, occ),
-        still=live.still_arg(s.image, s.result, blemish, occ) if upload else None,
+        grades=None if upload else live.grades_arg(s.result, s.frame, blemish, occ, disp),
+        still=live.still_arg(s.image, s.result, blemish, occ, disp) if upload else None,
         show_boxes=bool(s.ov_boxes) if model else True, show_fresh=bool(s.ov_fresh) if model else True,
-        show_blemish=blemish, show_occ=occ, aspect=0.62 if model else 0.7, max_height=640 if model else 560)
+        show_blemish=blemish, show_occ=occ, show_disp=disp, aspect=0.62 if model else 0.7, max_height=640 if model else 560)
 
 
 def main() -> None:

@@ -362,6 +362,7 @@
       });
       const showLabels = model ? !!args.show_boxes : true;
       const showFresh = model ? !!args.show_fresh : true;
+      const showDisp = model && !!args.show_disp;        // camera-tuned %, display only, Model view only
       const font = 13 * dpr, lh = 20 * dpr;
       ctx.font = "700 " + font + "px Inter, system-ui, sans-serif";
       shown.forEach((b, i) => {
@@ -381,13 +382,25 @@
           if (known) lines.push([Math.round(g.freshness * 100) + "% fresh" + (model && tier ? " · " + tier : ""), TIER[tier] || GREY, 600]);
           else if (checking) lines.push(["grading…", GREY, 600]);
         }
+        if (showDisp && g && g.fresh_disp !== null && g.fresh_disp !== undefined) {
+          lines.push(["camera-tuned " + Math.round(g.fresh_disp * 100) + "%" + (g.tier_disp ? " · " + g.tier_disp : ""),
+                      TIER[g.tier_disp] || GREY, 500, "disp"]);
+        }
         if (!lines.length) return;
         let cy = r[1] - lines.length * lh; if (cy < 4 * dpr) cy = r[1] + 4 * dpr;
         lines.forEach((l, j) => {
-          ctx.font = l[2] + " " + font + "px Inter, system-ui, sans-serif";
-          const wch = ctx.measureText(l[0]).width + 14 * dpr;
-          ctx.fillStyle = l[1]; ctx.fillRect(r[0], cy + j * lh, wch, lh);
-          ctx.fillStyle = "#FFFFFF"; ctx.fillText(l[0], r[0] + 7 * dpr, cy + j * lh + 14 * dpr);
+          const disp = l[3] === "disp";
+          ctx.font = (disp ? "italic " : "") + l[2] + " " + font + "px Inter, system-ui, sans-serif";
+          const wch = ctx.measureText(l[0]).width + 14 * dpr, y = cy + j * lh;
+          if (disp) {                        // muted chip, dashed outline: a comparison, not the decision
+            ctx.fillStyle = "rgba(255,255,255,0.82)"; ctx.fillRect(r[0], y, wch, lh);
+            ctx.save(); ctx.setLineDash([4 * dpr, 3 * dpr]); ctx.lineWidth = 1.5 * dpr; ctx.strokeStyle = l[1];
+            ctx.strokeRect(r[0] + 0.75 * dpr, y + 0.75 * dpr, wch - 1.5 * dpr, lh - 1.5 * dpr); ctx.restore();
+            ctx.fillStyle = "#3A4540"; ctx.fillText(l[0], r[0] + 7 * dpr, y + 14 * dpr);
+            return;
+          }
+          ctx.fillStyle = l[1]; ctx.fillRect(r[0], y, wch, lh);
+          ctx.fillStyle = "#FFFFFF"; ctx.fillText(l[0], r[0] + 7 * dpr, y + 14 * dpr);
         });
       });
     }

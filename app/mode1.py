@@ -8,6 +8,7 @@ import altair as alt
 import pandas as pd
 import streamlit as st
 
+import models
 import pipeline
 import views
 from components import label_of
@@ -121,18 +122,27 @@ def _curve_days(item: dict) -> list[int]:
     return list(item.get("curve_days") or range(len(item.get("curve", []))))
 
 
+DISPLAY_COL = "Camera-tuned %"
+DISPLAY_HELP = ("Fine-tuned on our own photos. Shown for comparison only; rejected for pricing because it "
+                "sold rotten produce 3× as often (notebook 9.11).")
+
+
 def _items_table(result: dict) -> pd.DataFrame:
+    items = result.get("items", [])
+    display = any(it.get("freshness_display") is not None for it in items)  # display only, never decides
     return pd.DataFrame([{
         "#": f"#{i}",
         "Detector type": label_of(it.get("produce")),
         "Box conf.": f'{it["det_conf"]:.0%}',
         "Freshness": f'{it["freshness"]:.0%}',
+        **({DISPLAY_COL: (f'{it["freshness_display"]:.0%} · {it.get("tier_display") or "—"}'
+                          if it.get("freshness_display") is not None else "—")} if display else {}),
         "Tier": it.get("tier") or "—",
         "Fresh. conf.": f'{it["fresh_conf"]:.0%}',
         "Days left": it.get("days_left"),
         "Blemish %": f'{it["blemish_pct"]:.1f}',
         "Seg. conf.": f'{it["seg_conf"]:.0%}',
-    } for i, it in enumerate(result.get("items", []), start=1)])
+    } for i, it in enumerate(items, start=1)])
 
 
 def render(live_view, on_upload) -> None:
@@ -153,8 +163,13 @@ def render(live_view, on_upload) -> None:
                     st.toggle("Boxes + type (detector)", key="ov_boxes")
                     st.toggle("Freshness % (ResNet-50)", key="ov_fresh")
                     st.toggle("Blemish mask (U-Net)", key="ov_blemish")
+                    if models.has_display():
+                        st.toggle("Camera-tuned % (display only)", key="ov_disp",
+                                  help="Not used for the price. " + DISPLAY_HELP)
                     cam = st.toggle("Occlusion map (item #1)", key="ov_cam")
                 occ_slot = st.empty()
+                if st.session_state.ov_disp and models.has_display():
+                    pipeline.ensure_display(result, image)  # scan made without it (e.g. in Shopper); once
                 if cam and result is not None and image is not None and result["items"] \
                         and "gradcam" not in result["items"][0]:
                     with occ_slot, st.spinner("Computing the occlusion map…"):
@@ -177,7 +192,9 @@ def render(live_view, on_upload) -> None:
                 with items:
                     st.markdown('<span class="card-tag">ITEMS IN THIS SCAN</span>', unsafe_allow_html=True)
                     if result is not None:
-                        st.dataframe(_items_table(result), hide_index=True)
+                        st.dataframe(_items_table(result), hide_index=True,
+                                     column_config={DISPLAY_COL: st.column_config.TextColumn(DISPLAY_COL,
+                                                                                             help=DISPLAY_HELP)})
                 with curve_tab:
                     st.markdown('<span class="card-tag">FRESHNESS CURVE (ITEM #1)</span>', unsafe_allow_html=True)
                     first = result["items"][0] if result is not None and result["items"] else {}

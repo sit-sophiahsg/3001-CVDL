@@ -24,6 +24,9 @@ ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_REPO = "sophiahsgsit/freshmart-models"
 CONFIG_NAME = "deploy_config.json"
 MODEL_KEYS = ("detector", "freshness", "blemish", "forecast")
+# Camera-tuned freshness (r50_ownft). Optional and DISPLAY ONLY (Model view): it was rejected for pricing,
+# so no rule or price ever reads it. Same inputs/outputs as "freshness"; missing key or file -> not shown.
+DISPLAY_KEY = "freshness_display"
 
 
 def _load_scale_pricing():
@@ -55,6 +58,11 @@ def bundle_files(deploy: dict, include_models: bool = True) -> list[str]:
     return names
 
 
+def display_file(deploy: dict) -> str | None:
+    """The optional display-only freshness file named in deploy_config, or None."""
+    return (deploy.get("files") or {}).get(DISPLAY_KEY) or None
+
+
 def download_bundle(include_models: bool = True, revision: str | None = None) -> Path:
     """Folder holding deploy_config.json and the bundle files (downloaded to the HF cache if needed).
 
@@ -73,6 +81,12 @@ def download_bundle(include_models: bool = True, revision: str | None = None) ->
     deploy = json.loads(config_path.read_text(encoding="utf-8"))
     for name in bundle_files(deploy, include_models):
         hf_hub_download(repo, name, revision=commit)
+    extra = display_file(deploy) if include_models else None
+    if extra:
+        try:                                        # optional: the app works without it
+            hf_hub_download(repo, extra, revision=commit)
+        except Exception:  # noqa: BLE001
+            pass
     return folder
 
 
@@ -136,4 +150,28 @@ def load_models() -> Models:
         session = ort.InferenceSession(str(folder / filename), options, providers=["CPUExecutionProvider"])
         _check_io(key, session, deploy["io"][key])
         sessions[key] = session
+    display = _load_display(ort, folder, deploy, options)
+    if display is not None:
+        sessions[DISPLAY_KEY] = display
     return Models(config, sessions)
+
+
+def _load_display(ort, folder: Path, deploy: dict, options):
+    """The display-only freshness session, or None if it is not named, not downloaded or does not match."""
+    filename = display_file(deploy)
+    if not filename or "int8" in filename.lower() or not (folder / filename).exists():
+        return None
+    try:
+        session = ort.InferenceSession(str(folder / filename), options, providers=["CPUExecutionProvider"])
+        _check_io(DISPLAY_KEY, session, (deploy.get("io") or {}).get(DISPLAY_KEY) or deploy["io"]["freshness"])
+        return session
+    except Exception:  # noqa: BLE001 - display only: never break the app
+        return None
+
+
+def has_display() -> bool:
+    """True when the display-only freshness model is loaded."""
+    try:
+        return DISPLAY_KEY in load_models().sessions
+    except Exception:  # noqa: BLE001
+        return False
