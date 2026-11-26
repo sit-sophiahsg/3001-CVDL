@@ -1,6 +1,6 @@
-# FreshMart Produce Scale: Freshness-Aware Pricing
+# Freshness-Aware Pricing: Computer Vision for Supermarket Produce Quality 
 
-**AAI3001 Deep Learning and Computer Vision · Group P1-9 ·**
+**AAI3001 Deep Learning and Computer Vision**
 
 ---
 
