@@ -6,4 +6,3 @@ app/design_ref
 logs
 *.ipynb
 ui_audit.md
-app/models
