@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import csv
+import os
 from pathlib import Path
 from urllib.parse import quote
 
 import streamlit as st
 
 ROOT = Path(__file__).parent.parent
+WEIGHT_KG = 0.25  # fixed net weight (kg) for every scan: there is no real load cell
 
 LABELS = {"apple": "Apple", "banana": "Banana", "orange": "Orange", "capsicum": "Capsicum",
           "tomato": "Tomato", "potato": "Potato"}
@@ -110,8 +112,6 @@ CSS = """
 .brand { display:flex; align-items:center; gap:12px; }
 .brand-name { font-family:'Space Grotesk', Inter, sans-serif; font-weight:700; font-size:22px; color:#FFFFFF; line-height:1.2; }
 .brand-sub { font-size:12px; color:#BFD8C9; }
-.brand-note { font-size:11px; color:#94B9A4; }
-.nav-date { font-size:14px; color:#DDEBE2; }
 .st-key-view [data-testid="stButtonGroup"] { width:fit-content; }
 .st-key-view [data-testid="stButtonGroup"] > div { background:#0B2A1C; border-radius:999px; padding:4px; gap:4px; width:fit-content; }
 .st-key-view button { border:none !important; border-radius:999px !important; min-height:44px; padding:10px 20px !important;
@@ -124,18 +124,29 @@ CSS = """
 .st-key-page { padding:clamp(10px, 1.8vh, 24px) 28px; box-sizing:border-box; }
 
 /* scale bezel + screen */
-.st-key-scale { width:100%; max-width:860px; margin:0 auto; background:#1C2022; border-radius:28px; padding:18px;
+.st-key-scale { width:100%; max-width:1240px; margin:0 auto; background:#1C2022; border-radius:28px; padding:18px;
   box-shadow:0 18px 40px rgba(16,38,27,.25); box-sizing:border-box; }
 .st-key-scale { padding:clamp(10px, 1.8vh, 18px); border-radius:clamp(18px, 3vh, 28px); }
 .st-key-screen { background:#EAF3F1; border-radius:14px; overflow:hidden; gap:0 !important; }
-[data-testid="stLayoutWrapper"]:has(> [class*="st-key-body_"]) { flex:1 1 auto !important; display:flex; flex-direction:column; }
-[class*="st-key-body_"] { flex:1 1 auto; padding:clamp(18px, 3vh, 26px) 18px clamp(10px, 1.6vh, 18px); box-sizing:border-box;
-  gap:clamp(8px, 1.4vh, 14px); }
-.st-key-body_welcome, .st-key-body_stop, .st-key-body_printed, .st-key-body_upload { justify-content:center; }
 .st-key-scale_foot { background:#D7E6E2; padding:clamp(6px, 1vh, 10px) 18px; box-sizing:border-box; }
 .scale-foot-mid { font-size:13px; color:#3D5A4B; text-align:center; }
 
-.readouts { display:grid; grid-template-columns:repeat(4, minmax(0,1fr)); gap:6px; padding:clamp(6px, 1vh, 10px); background:#D7E6E2; }
+.readouts { display:grid; grid-template-columns:repeat(3, minmax(0,1fr)); gap:6px; padding:clamp(6px, 1vh, 10px); background:#D7E6E2; }
+.readout .rl { display:flex; align-items:center; gap:6px; flex-wrap:wrap; }
+.demo-tag { background:#E0B33A; color:#3B2F00; border-radius:4px; padding:0 6px; font-size:11px; font-weight:800; letter-spacing:.6px; }
+.readout .rv.nfs { font-size:clamp(18px, 3vh, 26px); line-height:1.6; }
+.stApp .demo-grey, .stApp p.demo-grey { margin:2px 0 0 !important; font-size:clamp(10.5px, 1.5vh, 12px) !important; line-height:1.35 !important; color:#6B7A73 !important; }
+/* both models' bag freshness: camera-tuned prominent, the actual model (ResNet-50) muted */
+.fr-card { display:flex; flex-direction:column; gap:6px; }
+.fr-main { background:#FFF4D6; border:2px solid #E0B33A; border-radius:12px; padding:6px 12px; display:flex; flex-direction:column; gap:2px; }
+.fr-big { font-family:'Space Grotesk', Inter, sans-serif; font-size:clamp(20px, 3.2vh, 28px); font-weight:700; color:#10261B;
+  display:flex; align-items:center; gap:10px; flex-wrap:wrap; line-height:1.2; }
+.fr-big .pill { font-size:14px; }
+.fr-sub { background:#F3F5F4; border-radius:10px; padding:clamp(2px, .5vh, 5px) 10px; display:flex; flex-direction:column; gap:1px; color:#5A6E64; }
+.fr-h { font-size:12px; font-weight:700; color:#5A6E64; letter-spacing:.3px; display:flex; gap:6px; align-items:center; flex-wrap:wrap; }
+.fr-v { font-size:13px; color:#3D5A4B; }
+.fr-tag { background:#E2E7E4; color:#3D5A4B; border-radius:4px; padding:0 6px; font-size:11px; font-weight:700; letter-spacing:.3px; }
+.fr-tag.hl { background:#E0B33A; color:#3B2F00; }
 .readout { background:#FFFFFF; border-radius:8px; overflow:hidden; display:flex; flex-direction:column; }
 .readout .rl { background:#2C6B4D; color:#FFFFFF; font-size:12px; font-weight:600; letter-spacing:.6px; padding:4px 10px; }
 .readout .rv { font-family:'Share Tech Mono', monospace; font-size:clamp(26px, 4.6vh, 38px); text-align:right; padding:2px 12px;
@@ -149,54 +160,93 @@ CSS = """
 .banner.warn { background:#FFD9A8; color:#4A1206; }
 .banner.stop { background:#F6C9BF; color:#4A1206; }
 
-/* welcome */
-.st-key-welcome_img { align-items:center; }
-.st-key-welcome_img [data-testid="stImage"], .st-key-welcome_img [data-testid="stImageContainer"] { display:flex; justify-content:center; margin:0 auto; }
-.st-key-welcome_img img { max-height:22vh; width:auto !important; object-fit:contain; }
-.st-key-welcome_btns { max-width:680px; margin:0 auto; width:100%; }
-.st-key-w_camera button, .st-key-w_upload button, .st-key-w_demo button { min-height:clamp(44px, 7vh, 64px); border-radius:14px !important; font-size:18px !important; font-weight:600 !important; }
-.st-key-w_upload button { background:#FFFFFF !important; color:#1F6F47 !important; border:2px solid #1F6F47 !important; }
-.small-note { font-size:14px; color:#3D5A4B; text-align:center; margin:0; }
+/* live view + side panel */
+.st-key-sbody { padding:18px 14px 12px; box-sizing:border-box; }
+.st-key-sbody [data-testid="stHorizontalBlock"] { gap:14px; }
+[class*="st-key-side_"] { gap:clamp(4px, .8vh, 8px) !important; }
+[class*="st-key-side_"] > * { flex-shrink:0 !important; }  /* never squeeze a card: it would overlap the next */
+/* Streamlit pulls every markdown block up by 1rem (for a trailing paragraph margin); our HTML cards have none,
+   so without this each card would overlap the next one by 16px */
+[class*="st-key-side_"] [data-testid="stMarkdownContainer"], .st-key-mv_right [data-testid="stMarkdownContainer"] {
+  margin-bottom:0 !important; }
+.st-key-side_stop, .st-key-side_printed { justify-content:flex-start; }
+.side-head { font-size:14px; font-weight:700; color:#3D5A4B; }
+.st-key-sbody iframe, .st-key-mv_left iframe { display:block; border:none; }
+.banner.ask { background:#FFE7A3; }
+.mv-foot { font-size:12px; color:#5A6E64; }
+.mv-none { font-size:14px; color:#3D5A4B; margin:8px 0; }
 
 /* shared big buttons */
-.st-key-cam_back button, .st-key-up_back button, .st-key-res_back button, .st-key-change_item button,
-.st-key-scan_again button, .st-key-next_item button, .st-key-go_shopper button {
-  min-height:clamp(44px, 6.5vh, 56px); border-radius:14px !important; padding:0 24px !important; font-size:17px !important;
+.st-key-res_back button, .st-key-change_item button, .st-key-scan_again button, .st-key-next_item button {
+  min-height:clamp(38px, 5.5vh, 56px); border-radius:14px !important; padding:0 22px !important; font-size:clamp(15px, 2.1vh, 17px) !important;
   font-weight:600 !important; }
 
 /* produce tiles: the whole card is the button */
 [class*="st-key-tile_"] { position:relative; background:#FFFFFF; border:2px solid #C9DAD3; box-shadow:0 2px 0 #C9DAD3;
-  border-radius:14px; min-height:clamp(96px, 16vh, 150px); padding:clamp(6px, 1.4vh, 14px) 10px clamp(6px, 1.2vh, 12px);
-  box-sizing:border-box; align-items:center; justify-content:center; gap:6px !important; }
+  border-radius:12px; min-height:clamp(64px, 9.4vh, 96px); padding:clamp(3px, .6vh, 8px) 8px; box-sizing:border-box;
+  justify-content:center; gap:0 !important; }
+[class*="st-key-tile_"] [data-testid="stElementContainer"]:has(.tile) { margin:0 !important; }
+[class*="st-key-tile_"] [data-testid="stMarkdownContainer"] { margin:0 !important; }
+[class*="st-key-tile_"]:has(.tile.on) { background:#E3F1E8; border-color:#1F6F47; }
+[class*="st-key-tile_"]:has(.tile.ask) { border-color:#E0B33A; }
 [class*="st-key-tile_"]:hover { border-color:#1F6F47; }
 [class*="st-key-tile_"]:has(button:focus-visible) { outline:3px solid #2B7FD6; outline-offset:2px; }
-.tile { display:flex; flex-direction:column; align-items:center; gap:clamp(2px, .6vh, 6px); text-align:center; }
-.tile svg { width:clamp(36px, 6.5vh, 70px); height:clamp(36px, 6.5vh, 70px); }
-.tile-name { font-size:clamp(15px, 2.1vh, 17px); font-weight:700; color:#10261B; }
-.tile-price { font-size:14px; color:#3D5A4B; }
+.tile { display:flex; flex-direction:column; align-items:center; justify-content:center; gap:clamp(1px, .3vh, 4px); text-align:center; }
+.tile svg { width:clamp(22px, 3.4vh, 38px); height:clamp(22px, 3.4vh, 38px); flex:none; }
+.tile-txt { display:flex; flex-direction:column; align-items:center; }
+.tile-name { font-size:clamp(13px, 1.9vh, 15px); line-height:1.15; font-weight:700; color:#10261B; }
+.tile-price { font-size:clamp(11px, 1.6vh, 13px); line-height:1.15; color:#3D5A4B; }
 [class*="st-key-pick_"] { position:absolute !important; inset:0; z-index:2; width:auto !important; margin:0 !important; }
 [class*="st-key-pick_"] div { width:100% !important; height:100% !important; }
 [class*="st-key-pick_"] button { width:100% !important; height:100% !important; background:transparent !important; border:none !important;
   color:transparent !important; box-shadow:none !important; border-radius:14px !important; cursor:pointer; }
-.not-here { margin:6px 0 0; font-size:15px; color:#3D5A4B; text-align:center; }
+.stApp p.not-here { margin:4px 0 0; font-size:12px; color:#5A6E64; }
+/* Shopper step 1: the tiles only, larger, centred in the scale screen */
+.st-key-choose_page { width:100%; max-width:min(1000px, 100%); margin:0 auto; justify-content:center; gap:clamp(6px, 1.4vh, 14px) !important; }
+.st-key-choose_page [data-testid="stHorizontalBlock"] { gap:clamp(8px, 1.4vw, 18px) !important; }
+.pick-head { display:block; text-align:center; font-size:clamp(17px, 2.8vh, 24px) !important; color:#10261B !important; }
+.st-key-choose_page [class*="st-key-tile_"] { min-height:clamp(96px, 17vh, 190px); }
+.st-key-choose_page .tile svg { width:clamp(44px, 8vh, 96px); height:clamp(44px, 8vh, 96px); }
+.st-key-choose_page .tile-name { font-size:clamp(16px, 2.6vh, 24px); }
+.st-key-choose_page .tile-price { font-size:clamp(13px, 2vh, 18px); }
+.st-key-choose_page p.not-here { text-align:center; font-size:clamp(12px, 1.7vh, 14px); }
+/* Shopper step 2: the chosen item */
+.st-key-weighing { background:#FFFFFF; border-radius:12px; padding:clamp(4px, .9vh, 10px) 12px; gap:10px !important;
+  justify-content:space-between; flex-wrap:wrap; }
+.weighing { display:flex; align-items:center; gap:10px; font-size:clamp(14px, 2.1vh, 18px); color:#10261B; }
+.weighing svg { width:clamp(26px, 4vh, 36px); height:clamp(26px, 4vh, 36px); flex:none; }
+.st-key-w_change button { min-height:clamp(34px, 4.8vh, 44px); border-radius:12px !important; font-weight:600 !important; }
+.st-key-weighing [data-testid="stElementContainer"] { width:auto !important; }
+.readout .rv.muted { color:#9DB0A6; }
+/* "Why this price?": result pop-up and PRINT page */
+.why { display:flex; flex-direction:column; gap:clamp(4px, .9vh, 10px); margin-top:4px; }
+.why-top { display:grid; grid-template-columns:minmax(0, 1.2fr) minmax(0, 1fr); gap:8px; align-items:stretch; }
+.why-top .fr-sub { justify-content:center; }
+.why-formula { grid-column:1 / -1; font-size:clamp(13px, 1.9vh, 16px); background:#FFFFFF; border-radius:10px; padding:clamp(4px, .8vh, 8px) 10px; }
+.why-pics { display:grid; grid-template-columns:repeat(5, minmax(0, 1fr)); gap:8px; }
+.why-pics .fc img { max-height:clamp(56px, 13vh, 150px); }
+.why-pics .fc.blem span { font-weight:700; }
+.st-key-side_why, .st-key-side_printed { justify-content:flex-start; }
 
 /* priced ticket */
-.st-key-ticket { position:relative; background:#FFFFFF; border-radius:14px 14px 0 0;
-  padding:clamp(12px, 2.2vh, 22px) 24px clamp(20px, 3vh, 30px); box-sizing:border-box; }
+.st-key-ticket { position:relative; background:#FFFFFF; border-radius:14px 14px 0 0; gap:6px !important;
+  padding:clamp(6px, 1.2vh, 16px) 16px clamp(12px, 2vh, 24px); box-sizing:border-box; }
+.st-key-ticket { gap:clamp(0px, .5vh, 6px) !important; }
+.st-key-t_right { border-top:1px dashed #9DB8AD; padding-top:clamp(4px, .8vh, 8px); }
 .st-key-ticket::after { content:""; position:absolute; left:0; right:0; bottom:0; height:10px;
   background:linear-gradient(45deg, #EAF3F1 50%, transparent 50%) 0 0 / 20px 20px repeat-x,
              linear-gradient(-45deg, #EAF3F1 50%, transparent 50%) 0 0 / 20px 20px repeat-x; }
-.t-name { font-family:'Space Grotesk', Inter, sans-serif; font-size:clamp(22px, 3.6vh, 30px); font-weight:700; letter-spacing:.4px; line-height:1.2; }
-.t-row { display:flex; flex-wrap:wrap; gap:10px; align-items:center; margin:clamp(4px, 1vh, 10px) 0; }
-.pill { border-radius:999px; padding:6px 14px; font-size:15px; font-weight:700; color:#FFFFFF; }
-.t-count { font-size:16px; color:#3D5A4B; }
-.t-msg { font-size:18px; font-weight:600; }
+.t-name { font-family:'Space Grotesk', Inter, sans-serif; font-size:clamp(18px, 2.8vh, 30px); font-weight:700; letter-spacing:.4px; line-height:1.2; }
+.t-row { display:flex; flex-wrap:wrap; gap:6px 10px; align-items:center; margin:clamp(2px, .6vh, 10px) 0; }
+.pill { border-radius:999px; padding:clamp(3px, .5vh, 6px) 12px; font-size:clamp(13px, 1.9vh, 15px); font-weight:700; color:#FFFFFF; }
+.t-count { font-size:clamp(13px, 1.9vh, 16px); color:#3D5A4B; }
+.t-msg { font-size:clamp(13px, 1.9vh, 16px); font-weight:600; }
 .t-right { display:flex; flex-direction:column; align-items:flex-end; gap:4px; }
 .t-strike { font-size:16px; color:#6B7F75; text-decoration:line-through; }
-.t-total { font-family:'Share Tech Mono', monospace; font-size:clamp(36px, 6vh, 52px); line-height:1.1; }
+.t-total { font-family:'Share Tech Mono', monospace; font-size:clamp(26px, 4.2vh, 52px); line-height:1.05; }
 .t-calc { font-size:14px; color:#3D5A4B; }
-.st-key-why_toggle button { color:#1F6F47 !important; text-decoration:underline; font-size:16px !important; font-weight:600 !important;
-  padding:8px 0 !important; min-height:44px; }
+.st-key-why_toggle button { color:#1F6F47 !important; text-decoration:underline; font-size:clamp(13px, 1.9vh, 16px) !important; font-weight:600 !important;
+  padding:2px 0 !important; min-height:clamp(26px, 4vh, 44px); }
 .why-grid { display:grid; grid-template-columns:repeat(auto-fit, minmax(240px, 1fr)); gap:14px; margin-top:6px; }
 .why-card { background:#FFFFFF; border-radius:12px; padding:14px; display:flex; flex-direction:column; gap:8px; }
 .why-title { font-size:14px; font-weight:700; color:#3D5A4B; }
@@ -205,20 +255,23 @@ CSS = """
 .fc { display:flex; flex-direction:column; align-items:center; gap:4px; font-size:12px; color:#3D5A4B; }
 .fc img { width:100% !important; aspect-ratio:1; object-fit:cover; border-radius:8px; }
 .illus { font-size:12px; color:#5A6E64; }
-.st-key-print_btn button { width:clamp(88px, 14vh, 120px); height:clamp(88px, 14vh, 120px); border-radius:50% !important; border:none !important; background:#F2C94C !important;
-  color:#3B2F00 !important; font-family:'Space Grotesk', Inter, sans-serif !important; font-size:24px !important; font-weight:700 !important;
+.st-key-print_btn button { width:clamp(54px, 8vh, 104px); height:clamp(54px, 8vh, 104px); border-radius:50% !important; border:none !important; background:#F2C94C !important;
+  color:#3B2F00 !important; font-family:'Space Grotesk', Inter, sans-serif !important; font-size:clamp(16px, 2.4vh, 24px) !important; font-weight:700 !important;
   box-shadow:0 6px 0 #C9A12C; }
+.st-key-print_btn button { padding:0 !important; white-space:nowrap; font-size:clamp(14px, 2vh, 24px) !important; }
+.st-key-print_btn button p { font-size:inherit !important; white-space:nowrap; }
 .st-key-print_btn button:active { transform:translateY(4px); box-shadow:0 2px 0 #C9A12C; }
 
 /* not priced */
-.stop-box { display:flex; flex-direction:column; align-items:center; gap:clamp(10px, 2.2vh, 22px); text-align:center; }
-.stop-icon { width:clamp(60px, 10vh, 96px); height:clamp(60px, 10vh, 96px); border-radius:50%; display:flex; align-items:center; justify-content:center; }
-.stop-detail { margin:0; font-size:clamp(17px, 2.4vh, 20px); max-width:560px; }
+.stop-box { display:flex; flex-direction:column; align-items:flex-start; gap:clamp(4px, 1.1vh, 12px); background:#FFFFFF; border-radius:14px; padding:clamp(10px, 1.8vh, 18px); }
+.stop-icon { width:clamp(34px, 5.6vh, 56px); height:clamp(34px, 5.6vh, 56px); border-radius:50%; display:flex; align-items:center; justify-content:center; }
+.stop-icon svg { width:60%; height:60%; }
+.stop-detail { margin:0; font-size:clamp(14px, 2vh, 17px); }
 .stop-box { padding-bottom:clamp(8px, 1.8vh, 18px); }
-.staff-pill { background:#FFE9E4; color:#8A1C0E; border-radius:999px; padding:10px 18px; font-size:16px; font-weight:600; }
+.staff-pill { background:#FFE9E4; color:#8A1C0E; border-radius:999px; padding:clamp(4px, .9vh, 10px) 14px; font-size:clamp(13px, 1.9vh, 16px); font-weight:600; }
 
 /* printed label */
-.label-card { width:300px; margin:0 auto; background:#FFFFFF; border-radius:10px; box-shadow:0 10px 24px rgba(16,38,27,.18);
+.label-card { width:270px; margin:0 auto; background:#FFFFFF; border-radius:10px; box-shadow:0 10px 24px rgba(16,38,27,.18);
   padding:clamp(10px, 1.8vh, 18px) 20px; display:flex; flex-direction:column; gap:clamp(2px, .5vh, 6px); font-size:14px;
   box-sizing:border-box; }
 .label-card svg { height:clamp(28px, 4.5vh, 44px); }
@@ -238,8 +291,18 @@ CSS = """
 .st-key-modelpage { width:100%; max-width:1360px; margin:0 auto; gap:16px; }
 .stApp h1.mv-title { margin:0; padding:0; font-family:'Space Grotesk', Inter, sans-serif; font-size:28px !important; font-weight:700; line-height:1.25; }
 .mv-photo { display:block; width:100% !important; max-width:none !important; border-radius:12px; background:#DFF2E1; }
-.st-key-mv_left [data-testid="stCheckbox"] label:has(input[aria-checked="true"]) > div:first-child { background:#1F6F47 !important; }
-.st-key-mv_left [data-testid="stCheckbox"] p { font-size:14px !important; font-weight:600; }
+.st-key-mv_toggles [data-testid="stCheckbox"] label:has(input[aria-checked="true"]) > div:first-child { background:#1F6F47 !important; }
+.st-key-mv_toggles [data-testid="stCheckbox"] p { font-size:13px !important; font-weight:600; }
+.st-key-mv_toggles { gap:4px 14px !important; flex-wrap:wrap; flex-shrink:0; padding:10px 0 8px; border-bottom:1px solid #EEF1EF; }
+.demo-card { background:#FFF4D6 !important; border:2px solid #E0B33A !important; border-radius:12px !important;
+  padding:14px 16px !important; margin:10px 0 12px !important; }
+.demo-card .demo-price { font-family:'Space Grotesk', Inter, sans-serif; font-size:40px; line-height:1.1; font-weight:700; color:#10261B;
+  display:flex; align-items:baseline; gap:12px; flex-wrap:wrap; }
+.demo-card .demo-tier { font-size:20px; background:#1F6F47; color:#FFFFFF; border-radius:999px; padding:2px 12px; }
+.st-key-mv_right .card.real-muted { opacity:.78; gap:6px; }
+.real-muted .dec-rule-sm { font-family:'Space Grotesk', Inter, sans-serif; font-size:15px; font-weight:700; color:#3D5A4B; }
+.real-muted .chip { font-size:12px; }
+.st-key-mv_toggles p { font-size:13px !important; font-weight:600; }
 .mv-sub { font-size:14px; color:#3D5A4B; }
 .st-key-devbox { background:#FFFFFF; border:1px solid #C9DAD3; border-radius:14px; padding:12px 14px; box-sizing:border-box; }
 .dev-tag { font-size:12px; font-weight:700; color:#3D5A4B; letter-spacing:.4px; }
@@ -266,9 +329,8 @@ CSS = """
 .st-key-mv_top [data-testid="stElementContainer"]:has(.standin) { flex:1 1 220px; min-width:0; }
 .st-key-mv_top [data-testid="stElementContainer"]:has(.mv-head) { flex:0 0 auto; width:auto !important; }
 .st-key-mv_top [data-testid="stLayoutWrapper"]:has(> .st-key-devbox) { flex:0 0 auto; width:auto !important; }
-.st-key-devbox { flex-wrap:nowrap !important; width:auto !important; padding:8px 12px !important; gap:12px !important; }
+.st-key-devbox { flex-wrap:wrap !important; width:auto !important; padding:8px 12px !important; gap:12px !important; }
 .st-key-devbox .st-key-simulate_rule { width:240px !important; flex:0 0 240px; }
-.st-key-devbox .st-key-weight_kg { width:170px !important; flex:0 0 170px; }
 .st-key-devbox [data-testid="stWidgetLabel"] p { white-space:nowrap; }
 .st-key-devbox [data-testid="stElementContainer"]:has(.dev-tag) { width:auto !important; flex:0 0 auto; align-self:center; }
 .standin { padding:8px 12px; font-size:13px; }
@@ -293,12 +355,14 @@ CSS = """
   [data-testid="stLayoutWrapper"]:has(> .st-key-page), [data-testid="stLayoutWrapper"]:has(> .st-key-scale),
   [data-testid="stLayoutWrapper"]:has(> .st-key-screen), [data-testid="stLayoutWrapper"]:has(> .st-key-modelpage),
   [data-testid="stLayoutWrapper"]:has(> .st-key-mv_cols), [data-testid="stLayoutWrapper"]:has(> .st-key-mv_left),
-  [data-testid="stLayoutWrapper"]:has(> .st-key-mv_right), [data-testid="stLayoutWrapper"]:has(> [class*="st-key-body_"]),
-  [data-testid="stLayoutWrapper"]:has(> .st-key-mv_empty) {
+  [data-testid="stLayoutWrapper"]:has(> .st-key-mv_right),
+  [data-testid="stLayoutWrapper"]:has(> .st-key-mv_empty), [data-testid="stLayoutWrapper"]:has(> .st-key-sbody) {
     flex:1 1 0 !important; min-height:0 !important; display:flex; flex-direction:column; }
   .st-key-page, .st-key-scale, .st-key-screen, .st-key-modelpage, .st-key-mv_cols, .st-key-mv_left, .st-key-mv_right,
-  [class*="st-key-body_"] { flex:1 1 0 !important; min-height:0 !important; flex-wrap:nowrap; }
-  [class*="st-key-body_"] { overflow-y:auto; overflow-x:hidden; }
+  .st-key-sbody { flex:1 1 0 !important; min-height:0 !important; flex-wrap:nowrap; }
+  .st-key-sbody > [data-testid="stLayoutWrapper"] { flex:1 1 0 !important; min-height:0 !important; }
+  .st-key-sbody [data-testid="stHorizontalBlock"] { height:100%; flex-wrap:nowrap; }
+  .st-key-sbody [data-testid="stColumn"] { min-height:0; height:100%; overflow:hidden; }  /* never a scrollbar */
   .st-key-mv_cols > [data-testid="stLayoutWrapper"]:has(> [data-testid="stHorizontalBlock"]) {
     flex:1 1 0 !important; min-height:0 !important; display:flex; flex-direction:column; }
   .st-key-mv_cols > [data-testid="stLayoutWrapper"] > [data-testid="stHorizontalBlock"] { flex:1 1 0; min-height:0; height:100%;
@@ -308,17 +372,12 @@ CSS = """
   .st-key-mv_left > * { flex-shrink:0; }
   .st-key-mv_left [data-testid="stElementContainer"]:has(.mv-photo-box) { flex:1 1 0; min-height:0; flex-shrink:1; }
   .st-key-mv_left [data-testid="stElementContainer"]:has(.mv-photo-box) div { height:100%; }
+  .st-key-mv_right [data-testid="stLayoutWrapper"]:has(> .st-key-mv_toggles) { flex:0 0 auto !important; }
   .st-key-mv_right [data-testid="stElementContainer"]:has([data-testid="stTabs"]),
   .st-key-mv_right [data-testid="stLayoutWrapper"]:has([data-testid="stTabs"]) { flex:1 1 0; min-height:0; display:flex; flex-direction:column; }
   .st-key-mv_right [data-testid="stTabs"] { flex:1 1 0; min-height:0; height:100%; display:flex; flex-direction:column; }
   .st-key-mv_right [data-testid="stTabs"] > div { flex:1 1 0; min-height:0; display:flex; flex-direction:column; }
   .st-key-mv_right [data-testid="stTabs"] [role="tabpanel"] { flex:1 1 0; min-height:0; overflow-y:auto; overflow-x:hidden; }
-  /* camera box: max-width = (available height - ~180px) x 4/3 */
-  .st-key-body_camera { container-type:size; }
-  .st-key-body_camera [data-testid="stCameraInput"] { max-width:calc((100cqh - 180px) * 4 / 3); margin:0 auto; }
-  /* the permission placeholder has a fixed height; keep it inside the same budget */
-  .st-key-body_camera [data-testid="stCameraInputWebcamComponent"] > div:first-child {
-    max-height:calc(100cqh - 180px) !important; min-height:0 !important; overflow:hidden; }
 }
 
 """
@@ -327,12 +386,8 @@ CSS = """
 def style() -> None:
     rules = [
         CSS,
-        _buttons(["w_camera", "scan_again", "next_item", "go_shopper"], _FILLED),
-        _buttons(["w_demo", "cam_back", "up_back", "res_back", "change_item"], _OUTLINE),
-        _icon_rule("w_camera", "camera", "#FFFFFF"),
-        _icon_rule("w_upload", "upload", "#1F6F47"),
-        _icon_rule("w_demo", "photo", "#10261B"),
-        _icon_rule("res_back", "chevron", "#10261B", 20),
+        _buttons(["scan_again", "next_item"], _FILLED),
+        _buttons(["res_back", "change_item"], _OUTLINE),
         _icon_rule("foot_home", "house", "#FFFFFF", 20),
     ]
     st.html("<style>" + "\n".join(rules) + "</style>")
@@ -340,16 +395,22 @@ def style() -> None:
 
 # ---------------------------------------------------------------- data + state
 def load_prices() -> dict[str, float]:
-    path = ROOT / "configs" / "prices.csv"
-    if not path.exists():
+    """Price per kg from the model bundle's prices.csv ({} if the bundle cannot be read)."""
+    import models
+    try:
+        return dict(models.load_config().prices)
+    except Exception:  # noqa: BLE001 - shown as one st.error by app.py; tiles fall back to 0.00
         return {}
-    with path.open(newline="", encoding="utf-8") as file:
-        return {row["produce"]: float(row["price_per_kg"]) for row in csv.DictReader(file)}
 
 
-def log_scan(entry: dict) -> None:
-    path = ROOT / "logs" / "scans.csv"
-    path.parent.mkdir(exist_ok=True)
+def log_dir() -> Path:
+    """FRESHMART_LOG_DIR, default logs/ in the repo root."""
+    folder = os.environ.get("FRESHMART_LOG_DIR")
+    return Path(folder) if folder else ROOT / "logs"
+
+
+def _append_log(path: Path, entry: dict) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
     exists = path.exists()
     with path.open("a", newline="", encoding="utf-8") as file:
         writer = csv.DictWriter(file, fieldnames=["time", "selected_type", "rule_id", "staff_alert"])
@@ -358,15 +419,25 @@ def log_scan(entry: dict) -> None:
         writer.writerow(entry)
 
 
-def bump_nonce() -> None:
-    """New widget keys for camera/uploader, so they come back empty."""
-    st.session_state.input_nonce = st.session_state.get("input_nonce", 0) + 1
+def log_scan(entry: dict) -> None:
+    """Append time, selected type, rule and staff alert (never the photo).
+
+    Falls back to the system temp folder if the log folder is read-only (hosted deployments);
+    a log that cannot be written never breaks a scan.
+    """
+    import tempfile
+    for folder in (log_dir(), Path(tempfile.gettempdir()) / "freshmart_logs"):
+        try:
+            _append_log(folder / "scans.csv", entry)
+            return
+        except OSError:
+            continue
 
 
 def reset_scan_state() -> None:
     """Reset scan: same keys as before, plus the staff-called flag."""
-    for key, value in {"screen": "welcome", "selected_type": None, "weight_kg": 0.25,
-                       "image": None, "result": None, "failed_scans": 0, "scan_logs": [],
-                       "staff_called": False}.items():
+    for key, value in {"screen": "live", "selected_type": None,
+                       "image": None, "frame": None, "source": None, "result": None, "failed_scans": 0, "failed_scans_model": 0,
+                       "mv_image": None, "mv_frame": None, "mv_result": None,
+                       "scan_logs": [], "staff_called": False}.items():
         st.session_state[key] = value
-    bump_nonce()

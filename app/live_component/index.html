@@ -1,0 +1,46 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>FreshMart live scale</title>
+<style>
+html, body { margin: 0; padding: 0; background: transparent; font-family: Inter, system-ui, sans-serif; }
+#stage { position: relative; width: 100%; border-radius: 14px; overflow: hidden; background: #0F1A15; }
+#view { display: block; width: 100%; height: 100%; }
+#video { position: absolute; width: 1px; height: 1px; opacity: 0; pointer-events: none; }
+.pill { background: rgba(0, 0, 0, 0.55); color: #FFFFFF; border-radius: 999px; padding: 5px 12px; font-size: 13px; }
+#tl { position: absolute; left: 12px; top: 12px; display: flex; gap: 8px; align-items: center; }
+#live { display: flex; align-items: center; gap: 6px; font-weight: 700; }
+#live i { width: 9px; height: 9px; border-radius: 50%; background: #FF3B30; animation: pulse 1.2s infinite; }
+#stage[data-state="frozen"] #live i { background: #E0B33A; animation: none; }
+#ring { position: absolute; right: 12px; top: 10px; display: none; align-items: center; gap: 8px; padding: 4px 12px 4px 6px; }
+#ringtext { position: absolute; right: 12px; top: 12px; display: none; }
+#scanline { position: absolute; left: 0; right: 0; top: 0; height: 3px; background: #B9E26A; box-shadow: 0 0 14px #B9E26A;
+  animation: scanline 0.7s linear infinite; display: none; }
+#msg { position: absolute; inset: 0; display: none; align-items: center; justify-content: center; pointer-events: none; padding: 16px; }
+#msg span { background: rgba(255, 255, 255, 0.9); border-radius: 12px; padding: 10px 16px; font-size: 15px; color: #3D5A4B;
+  text-align: center; max-width: 440px; }
+#back { position: absolute; right: 12px; bottom: 12px; display: none; border: none; border-radius: 10px; min-height: 40px;
+  padding: 0 14px; font-size: 14px; font-weight: 600; background: #1F6F47; color: #FFFFFF; cursor: pointer; font-family: inherit; }
+@keyframes scanline { from { transform: translateY(0) } to { transform: translateY(var(--h, 400px)) } }
+@keyframes pulse { 0%, 100% { opacity: 1 } 50% { opacity: .35 } }
+</style>
+</head>
+<body>
+<div id="stage" role="img" aria-label="Live camera with detected items and their labels">
+  <canvas id="view"></canvas>
+  <video id="video" playsinline muted autoplay></video>
+  <div id="tl"><span class="pill" id="live"><i></i><span id="livetext">LIVE</span></span><span class="pill" id="count">no items</span></div>
+  <div class="pill" id="ring"><svg width="28" height="28" viewBox="0 0 36 36" aria-hidden="true">
+    <circle cx="18" cy="18" r="14" fill="none" stroke="#5E6B64" stroke-width="4"></circle>
+    <circle id="ringarc" cx="18" cy="18" r="14" fill="none" stroke="#B9E26A" stroke-width="4" stroke-dasharray="88"
+      stroke-dashoffset="88" transform="rotate(-90 18 18)" stroke-linecap="round"></circle></svg>Hold still</div>
+  <div class="pill" id="ringtext"></div>
+  <div id="scanline" aria-hidden="true"></div>
+  <div id="msg" role="status"><span id="msgtext">Starting the camera…</span></div>
+  <button id="back" type="button">Back to live camera</button>
+</div>
+<script src="https://cdn.jsdelivr.net/npm/onnxruntime-web@1.22.0/dist/ort.webgpu.min.js"></script>
+<script src="./live.js"></script>
+</body>
+</html>

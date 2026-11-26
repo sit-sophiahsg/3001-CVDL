@@ -1,0 +1,9 @@
+.git
+app/.venv
+**/__pycache__
+**/*.pyc
+app/design_ref
+logs
+*.ipynb
+ui_audit.md
+app/models
